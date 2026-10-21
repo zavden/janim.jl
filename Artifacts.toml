@@ -1,0 +1,54 @@
+# wgpu-native v24.0.0.1 (https://github.com/gfx-rs/wgpu-native), the C
+# library behind the WebGPU backend (own bindings over Artifacts, no Pkg at
+# run time). The tarballs are the ones WGPUNative.jl 0.1.5 repackaged from the
+# official release (same lib, same headers, plus
+# `wgpu-native-meta/wgpu-native-git-tag` = v24.0.0.1), so a machine that has
+# that package installed already has this artifact, byte for byte, and
+# `Pkg.instantiate()` fetches it everywhere else. `src/backend/wgpu/bindings.jl`
+# resolves `lib/libwgpu_native.<ext>` from here at precompile time and opens
+# it lazily, on the first call — `using Janim` never touches it.
+
+[[wgpu_native]]
+arch = "x86_64"
+git-tree-sha1 = "dfeaf368dabb219555720d367f38c3d85b56027d"
+os = "linux"
+
+    [[wgpu_native.download]]
+    sha256 = "1915c0a1c2b16499260f34affed088754063ed49ec7adac1dfabc2fe5f49754d"
+    url = "https://github.com/JuliaWGPU/WGPUNative.jl/releases/download/v0.1.5/WGPU.v24.0.0.1.x86_64-linux.tar.gz"
+
+[[wgpu_native]]
+arch = "aarch64"
+git-tree-sha1 = "ecbdd0316b7bb2d5a2e9c5ec7fd8f9d816bcea20"
+os = "linux"
+
+    [[wgpu_native.download]]
+    sha256 = "378a082c5e97b171ba366cbbeda641abcf2ca70e2c0e97ebf53bd03c9cc4b6b2"
+    url = "https://github.com/JuliaWGPU/WGPUNative.jl/releases/download/v0.1.5/WGPU.v24.0.0.1.aarch64-linux.tar.gz"
+
+[[wgpu_native]]
+arch = "x86_64"
+git-tree-sha1 = "d647809838fb8c69a5b21a1f5498a6f027b8c065"
+os = "macos"
+
+    [[wgpu_native.download]]
+    sha256 = "370b06c1e3c5e82ec624303b2ede6b6d90270555f92c8f4e6a6e78e149ae221b"
+    url = "https://github.com/JuliaWGPU/WGPUNative.jl/releases/download/v0.1.5/WGPU.v24.0.0.1.x86_64-macos.tar.gz"
+
+[[wgpu_native]]
+arch = "aarch64"
+git-tree-sha1 = "426e47872cf0f9b71d24f2aedab11ad6053aa66d"
+os = "macos"
+
+    [[wgpu_native.download]]
+    sha256 = "1525892d3d71644afe84f01e69c3f593e11afdbd4d92fb167023a68544c4879c"
+    url = "https://github.com/JuliaWGPU/WGPUNative.jl/releases/download/v0.1.5/WGPU.v24.0.0.1.aarch64-macos.tar.gz"
+
+[[wgpu_native]]
+arch = "x86_64"
+git-tree-sha1 = "330a41acf0198c5590ba44218e7774089bd84d0e"
+os = "windows"
+
+    [[wgpu_native.download]]
+    sha256 = "3f79e478eaf14057f9b4250fea7a3b51b141f870b9582797544da44f10abb712"
+    url = "https://github.com/JuliaWGPU/WGPUNative.jl/releases/download/v0.1.5/WGPU.v24.0.0.1.x86_64-windows.tar.gz"

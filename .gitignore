@@ -1,0 +1,26 @@
+# Render output
+*.mp4
+*.mov
+*.webm
+*.gif
+*.png
+*.jpg
+*.wav
+*.mp3
+output/
+media/
+examples/gallery/expected/
+
+# CLI configuration
+janim.cfg
+
+# Documentation build
+docs/build/
+docs/Manifest.toml
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

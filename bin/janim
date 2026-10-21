@@ -1,0 +1,1080 @@
+#!/usr/bin/env bash
+# Janim's CLI. Pure bash + /dev/tcp: it NEVER starts Julia, so the TTFX belongs
+# to the daemon and not to every invocation.
+#
+#   janim scene.jl [flags]             no verb = PREVIEW, manimgl-style:
+#                          -w          …write the video instead (= render)
+#                          -p          …write the video AND open it when done
+#                          -s          …one frame (= render -s)
+#   janim render  scene.jl [-qm] [-r WxH] [--fps N] [-o out.mp4] [-j 4] [-p] [-t]
+#                          [--from X] [--to Y] [-n X,Y]
+#                          [--samples N]      multisampling (4 = the default, the fill's antialiasing; 1 = none)
+#                          -n X,Y             animations X..Y — play!/wait! numbered from 1 — NOT frames
+#                          [-s [--to Y]]      one frame instead of a video
+#                          [--out_dir DIR]    put the output in DIR (mkdir -p'd);
+#                                             an absolute -o already says where and wins
+#                          [--no-tui]         skip the panel (cfg + flags apply)
+#                          [--only-cli]       skip the panel AND the cfg (for agents)
+#   janim frame   scene.jl K out.png [-qm] [-r WxH] [--fps N] [-t] [--samples N]
+#                 (re-simulates from t = 0: a late frame costs its whole prefix;
+#                  for several frames of a long scene render once, then ffmpeg -vf select)
+#   janim preview scene.jl [-c] [--samples N]   warm via the daemon when it is up
+#                 Esc/q=quit  space=pause  ,/.=frame  ←/→=±1 s  [ ]=animation
+#                 PgUp/PgDn=checkpoint  Home=start  c=stop at checkpoints
+#                 (-c starts with that on; Ctrl-C here also closes the window;
+#                  --samples previews the same MSAA a render would use)
+#   janim states  scene.jl
+#   janim daemon  start|stop|status
+#   janim check                     orphan daemons? (exit 1 if there are)
+#   janim finish  [-f]              close every orphan daemon, keeping yours
+#   janim codecs
+#   janim ping
+#
+# SEVERAL SCENES PER FILE. Every <scene.jl> above also accepts
+# `scene.jl:name`: a file may define several scene functions and the suffix
+# names the one you mean (`construct` when absent). The split is at the LAST ':'
+# and only when what is left of it ends in `.jl`, so `C:\path\x.jl` and
+# `/p/odd:dir/x.jl` stay whole paths. The default output gains the name:
+# `janim render x.jl:intro` writes `x_intro.mp4`. Works on render, frame,
+# preview, states, the verbless form, `-j` (the farm) and `--from` (checkpoints
+# are kept per scene).
+#
+# RUN `janim check` BEFORE YOU START EDITING, and `janim finish` when it
+# complains. A daemon that outlives whoever started it is not idle noise: a
+# LISTENING one holds the port, so a new daemon dies of EADDRINUSE and your
+# commands quietly talk to the stale one — with results that have nothing to do
+# with your code. A NON-LISTENING one answers nothing and still holds its heap;
+# fourteen of them hold ~12 GB, which is enough to move a timing measurement.
+# `finish` never kills the daemon this CLI talks to, and refuses outright while
+# a test run is in progress (its daemons look exactly like orphans and are not)
+# unless you insist with `-f`.
+#
+# THE GOLDEN RULE: the ENGINE reads no config.
+# Precedence is `CLI flag > the Scene kwargs in your script > engine defaults`,
+# and it is resolved by BUILDING the scene with those kwargs — nothing global,
+# nothing to un-set.
+#
+# `janim.cfg` — a CLI SHORTENER, not engine state. A file of CLI flags
+# (one per line, `#` comments) looked up beside the SCENE and then in the cwd;
+# the client prepends it to your argv and ANNOUNCES it («← janim.cfg: …») —
+# an announced file is not hidden state, which was the objection to manim.cfg.
+# Your explicit flags always win (they parse after it). On a TTY, `render` and
+# `preview` open a small PANEL over those merged values: ↑/↓ move (vim hands:
+# Ctrl+J/K), typing edits, ←/→ cycle QUALITY and toggle yes/no fields
+# (Ctrl+H/L), ENTER renders, Ctrl+S writes janim.cfg and renders, ESC quits.
+# QUALITY is the compound preset;
+# WIDTH/HEIGHT/FPS empty inherit from it and OVERRIDE it when written; OUTPUT
+# empty derives from the scene's name. `-o` is never auto-persisted (a fixed
+# output in a shared cfg would send every scene to the same file). Escapes:
+# `--no-tui` skips the panel (cfg + flags still apply), `--only-cli` skips
+# BOTH (flags and defaults alone — the fully predictable call for agents and
+# scripts), JANIM_NO_CFG=1 is the env spelling of the cfg skip (for scripts
+# and test runs), and a pipe (no TTY) never sees the panel at all.
+#
+# NO VERB, and `--out_dir`. `janim scene.jl` alone is a PREVIEW, the
+# way manimgl's bare invocation is a window; `-w` writes the video instead
+# (render), `-p` writes it and opens it, `-s` is the still. An explicit
+# `preview` REFUSES `-w`/`-p` out loud rather than accepting and dropping them.
+# `--out_dir DIR` puts the output in DIR, creating it (`mkdir -p`): an empty
+# OUTPUT becomes `DIR/<scene>.mp4` (`.mov` under `-t`), a relative `-o`
+# joins as `DIR/<out>`, an absolute `-o` already says where and wins with a
+# warning. The join happens HERE, in the client: the engine still receives
+# one plain `-o` and reads no directory policy. Unlike `-o`, Ctrl+S DOES
+# persist `--out_dir` — a shared destination directory is exactly what a
+# per-directory cfg means. (`via = :latex` needs nothing from this: it
+# compiles inside a self-cleaning mktempdir and only its SVG survives, in
+# ~/.cache/janim/tex/.)
+#
+# Quality presets — each sets BOTH the resolution and the frame rate:
+#
+#     -qs   640x360   10 fps      -qh  1920x1080  60 fps
+#     -ql   854x480   15 fps      -qq  2560x1440  60 fps
+#     -qm  1280x720   30 fps      -qk  3840x2160  60 fps   (4K)
+#
+# `-r` and `--fps` still win over whichever component they name, and the LAST
+# flag wins: `-qh -r 640x360` is 640x360 at 60 fps. Default: 1280x720 at 30.
+#
+# They also GLUE to -p and -w, as Manim writes them:
+#
+#     janim scene.jl -pqm   = -p -qm    (render, then open it)
+#     janim scene.jl -wqh   = -w -qh    (render, do not open)
+#
+# Verb first, quality second — `-qmp` is not a spelling. `-t` does not glue
+# on purpose: transparent output is ProRes 4444 and weighs enough to be a
+# final-render decision, so it stays something you type deliberately.
+#
+# Flags adopted from Manim: -r/--resolution, --fps, -o, -n, -p and the -q*
+# presets. The numbers behind the presets are written out HERE, in the help,
+# instead of living only in someone's head. The spelling follows Manim CE, with
+# two deliberate differences — `-qs` (360p10) is ours, for the draft pass CE
+# has no name for, and 1440p is `-qq` rather than CE's `-qp`, so that the
+# letters read as a scale (s·l·m·h·q·k) instead of one of them meaning
+# "production".
+#
+# `-t` / `--transparent` · alpha channel out, like Manim's. The video becomes
+# a `.mov` with ProRes 4444 (the format every editor reads) instead of an mp4,
+# and `janim frame -t` writes an RGBA png. Default output extension changes to
+# `.mov` when `-t` is given and no `-o` is: an mp4 cannot carry alpha, so
+# writing one would be a lie. It composes with `--from`/`--to` and `-n` (they
+# gate WHAT IS DRAWN, the alpha decides what the drawn pixels carry), and a
+# transparent segment comes out byte-identical to those frames of the whole
+# transparent render. NOT combinable with `-j`: that is deliberate, not a
+# gap — ProRes 4444 is ~137× the size of h264 and the farm is for long renders.
+#
+# Two things worth knowing if you composite the result: the engine works in
+# PREMULTIPLIED alpha and the exporter un-premultiplies on the way out, which
+# is what editors expect; and the video does NOT go through VideoIO, because
+# VideoIO drops the alpha channel by design (`_coerce_encoding_img`).
+#
+# `-n` is Manim's: an ANIMATION range `-n X,Y`, not a process count. The render
+# farm uses `-j/--jobs` (make's convention; `--nprocs` also works).
+#
+# `-n X,Y` renders only animations X to Y — and note that `wait!` is numbered
+# too. It is SUGAR FOR EXPLORING, not something to keep in a script: insert one
+# `play!` in the middle and every number after it shifts. What survives edits
+# is `checkpoint!(scene, "act2")` + `--from act2`, which is anchored by NAME.
+# `-n` also saves only the drawing and the encoding; a checkpoint saves the
+# simulation as well.
+#
+# A SCENE WITH NO ANIMATIONS IS WRITTEN AS AN IMAGE, like Manim's. If
+# `construct` never calls `play!` or `wait!` there is no video to make, so
+# `render` writes `<out>.png` instead of `<out>.mp4` (an RGBA one under `-t`,
+# since a png can carry the alpha that forced the `.mov`), says so on the OK
+# line, and `-p` opens that.
+#
+# This is about the SCENE, not about the selection. `-n`, `--from`/`--to` and
+# the farm's ranges gate the drawing of a scene that did animate, so an empty
+# selection still reports `-n … drew nothing` rather than quietly handing you a
+# still of a slice you did not ask for. `-j` refuses outright: there is nothing
+# to split, and the farm would concatenate empty segments.
+#
+# `-s` / `--save-frame` · ASK for one frame instead of a video, which is what
+# Manim's `-s` does (CE spells it `--save_last_frame`, GL `--skip_animations`;
+# both mean "save the last frame"). `janim render scene.jl -s` writes
+# `scene.png` — the last frame — and that is the whole point of the flag: it
+# lives beside `-r`, `-t` and the presets, so a still is a flag away instead of
+# a different subcommand with a different argument order.
+#
+#     janim render scene.jl -s              the LAST frame
+#     janim render scene.jl -s --to 40      frame 40
+#     janim render scene.jl -s --to 1.5s    the frame at 1.5 seconds
+#     janim render scene.jl -s -t -qh       …RGBA, at 1080p
+#
+# `--to` is reused rather than given a twin because it already speaks both
+# frames and seconds, and it already means "up to here". `-s` is a spelling of
+# the `frame` verb, not a second implementation: same code, same frame cache,
+# same alpha. It refuses `-j`, `--from` and `-n` instead of ignoring them —
+# `-n` selects ANIMATIONS, and a still is one frame, so `--to` is the way to
+# point at one.
+#
+# Port: $JANIM_PORT (default 7318).
+set -euo pipefail
+
+PORT="${JANIM_PORT:-7318}"
+PIDFILE="${XDG_CACHE_HOME:-$HOME/.cache}/janim/daemon.pid"
+LOGFILE="$(dirname "$PIDFILE")/daemon.log"
+
+# Strict determinism is always on: there is no knob to export. The WebGPU
+# backend's drivers — RADV, lavapipe — compile at pipeline creation and have
+# no shader-variant race, so one file renders to the same frames in every
+# process (JANIM_STRICT_GL is accepted and changes nothing). The function is
+# the single hook the call sites go through, and exports nothing.
+strict_gl_export() {
+    case "${JANIM_STRICT_GL:-1}" in
+        0|false|no|off) return 0 ;;
+    esac
+    return 0
+}
+
+usage() {
+    # Prints the header block above, whatever its length: everything from
+    # line 2 up to the first line that is not a comment, minus that line.
+    # A hardcoded line range would silently truncate the help the first time
+    # someone adds a paragraph.
+    sed -n '2,/^[^#]/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
+    exit "${1:-0}"
+}
+
+# ── talking to the daemon ──────────────────────────────────────────────────
+# One line in, one line out. With no daemon we say so and how to fix it —
+# never hang.
+#
+# TWO layers, and the split is load-bearing: `try_talk` fails QUIETLY (status
+# 9 when nothing listens), `talk` wraps it and explains-then-exits. They cannot
+# be one function whose no-daemon branch ends in `exit 1`: `exit` inside a
+# function fires even under `if` or `|| true`, so `janim daemon start` with
+# nothing listening would die in its own probe, before starting anything,
+# printing NOTHING (the messages are redirected).
+# CAREFUL with the connect line: `exec 3<>… 2>/dev/null` would bury the
+# WHOLE script's stderr forever (exec redirections persist), and the progress
+# bar, which lives on stderr, would vanish. Save stderr in fd 9, silence ONLY
+# the attempt, restore.
+_connect3() {
+    exec 9>&2 2>/dev/null
+    local st=0
+    exec 3<>"/dev/tcp/127.0.0.1/${PORT}" || st=9
+    exec 2>&9 9>&-
+    return "$st"
+}
+
+try_talk() {
+    _connect3 || return 9
+    echo "$*" >&3
+    IFS= read -r reply <&3
+    exec 3<&- 3>&-
+    echo "$reply"
+    [[ "$reply" == OK* ]]
+}
+
+talk() {
+    local st=0
+    try_talk "$@" || st=$?
+    if ((st == 9)); then
+        echo "ERR no daemon on 127.0.0.1:${PORT}" >&2
+        echo "    start one with: janim daemon start" >&2
+        exit 1
+    fi
+    return "$st"
+}
+
+# Like talk, but for the verbs that STREAM progress (mp4, preview): the
+# daemon sends `PROG <bar>` (overwrite) and `PROGN <bar>` (commit) lines
+# before the final OK/ERR. The daemon renders the bar's TEXT; this end only
+# moves the cursor — so the aesthetics live in ONE place, and they reach the
+# terminal even inside $(…) because they go to stderr.
+talk_stream() {
+    _connect3 || {
+        echo "ERR no daemon on 127.0.0.1:${PORT}" >&2
+        echo "    start one with: janim daemon start" >&2
+        exit 1
+    }
+    echo "$*" >&3
+    local line
+    while IFS= read -r line <&3; do
+        case "$line" in
+            "PROGN "*) printf '\r\033[K%s\n' "${line#PROGN }" >&2 ;;
+            "PROG "*)  printf '\r\033[K%s'   "${line#PROG }"  >&2 ;;
+            *)  printf '\r\033[K' >&2
+                exec 3<&- 3>&-
+                echo "$line"
+                [[ "$line" == OK* ]]
+                return ;;
+        esac
+    done
+    exec 3<&- 3>&-
+    echo "ERR the connection closed before a reply" >&2
+    return 1
+}
+
+janim_root() {
+    cd "$(dirname "$(readlink -f "$0")")/.." && pwd
+}
+
+# The daemon's cwd is wherever `daemon start` ran, which is NOT necessarily
+# ours — every path that crosses the socket goes absolute. Pure bash rather
+# than `readlink -f`, because an output file need not exist yet.
+abs_path() {
+    case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac
+}
+
+# `file.jl:scene` addresses — bash's copy of Julia's `_scene_address`
+# rule: split at the LAST ':' whose left side ends in `.jl` (`%.jl:*` is the
+# SHORTEST suffix match, so the last such colon is the one that goes). The
+# address itself travels the protocol whole and the daemon re-splits it; these
+# two exist for the client's own needs — `-o`'s default and the cfg lookup.
+_scene_path() {   # $1 = address → the file half
+    case "$1" in
+        *.jl:*) printf '%s.jl\n' "${1%.jl:*}" ;;
+        *)      printf '%s\n' "$1" ;;
+    esac
+}
+_scene_name() {   # $1 = address → the scene half ("" when there is no suffix)
+    case "$1" in
+        *.jl:*) printf '%s\n' "${1##*.jl:}" ;;
+        *)      printf '\n' ;;
+    esac
+}
+
+# Open a finished render with the desktop's default video player. `xdg-open`
+# is Linux-specific; macOS ships `open` instead. Keep a fallback in both
+# directions because either launcher can also be installed on the other OS.
+open_output() {
+    local path="$1" opener=""
+    case "$(uname -s)" in
+        Darwin)
+            if command -v open >/dev/null 2>&1; then
+                opener="open"
+            elif command -v xdg-open >/dev/null 2>&1; then
+                opener="xdg-open"
+            fi
+            ;;
+        *)
+            if command -v xdg-open >/dev/null 2>&1; then
+                opener="xdg-open"
+            elif command -v open >/dev/null 2>&1; then
+                opener="open"
+            fi
+            ;;
+    esac
+    if [[ -z "$opener" ]]; then
+        echo "WARN -p: no desktop opener found for $path" >&2
+        return 0
+    fi
+    "$opener" "$path" >/dev/null 2>&1 ||
+        echo "WARN -p: could not open $path" >&2
+}
+
+daemon_cmd() {
+    case "${1:-status}" in
+        start)
+            if try_talk ping >/dev/null 2>&1; then
+                echo "OK daemon already up on $PORT"; return 0
+            fi
+            mkdir -p "$(dirname "$PIDFILE")"
+            local root; root="$(janim_root)"
+            strict_gl_export
+            # Linux has `setsid`; macOS does not. `nohup` plus a closed stdin
+            # gives the Julia process the same independence from this shell
+            # for our purposes, while keeping the launcher POSIX-hostable.
+            # Keep startup output: hiding it used to turn a missing command or
+            # a Julia load error into an unexplained 60-second wait.
+            if command -v setsid >/dev/null 2>&1; then
+                setsid julia --project="$root" --startup-file=no \
+                       -e "using Janim; Janim.daemon(port = $PORT)" \
+                       </dev/null >"$LOGFILE" 2>&1 &
+            else
+                nohup julia --project="$root" --startup-file=no \
+                      -e "using Janim; Janim.daemon(port = $PORT)" \
+                      </dev/null >"$LOGFILE" 2>&1 &
+            fi
+            local pid=$!
+            echo "$pid" > "$PIDFILE"
+            for _ in $(seq 1 600); do          # cold start is seconds, not ms
+                if try_talk ping >/dev/null 2>&1; then
+                    echo "OK daemon up on $PORT (pid $pid)"; return 0
+                fi
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    local status=0
+                    wait "$pid" || status=$?
+                    rm -f "$PIDFILE"
+                    echo "ERR the daemon exited during startup (status $status)" >&2
+                    if [[ -s "$LOGFILE" ]]; then
+                        echo "    log: $LOGFILE" >&2
+                        tail -n 20 "$LOGFILE" | sed 's/^/    /' >&2
+                    fi
+                    return 1
+                fi
+                sleep 0.1
+            done
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            rm -f "$PIDFILE"
+            echo "ERR the daemon did not come up within 60 s" >&2
+            echo "    log: $LOGFILE" >&2
+            return 1 ;;
+        stop)
+            local stopped="no"
+            try_talk stop >/dev/null 2>&1 && stopped="yes"
+            # Drop the pidfile only when it has actually gone stale. There is
+            # ONE pidfile for every port, so an unconditional `rm` would let a
+            # `stop` aimed at some OTHER port erase the record of a daemon
+            # that is alive and well, and `check` reads that record to decide
+            # which daemon is yours.
+            if [[ -f "$PIDFILE" ]]; then
+                local rec; rec="$(cat "$PIDFILE" 2>/dev/null || true)"
+                if [[ "$stopped" == yes || -z "$rec" ]] || ! kill -0 "$rec" 2>/dev/null
+                then rm -f "$PIDFILE"; fi
+            fi
+            echo "OK daemon stopped" ;;
+        status)  talk status ;;
+        *)       echo "ERR daemon: start|stop|status" >&2; exit 1 ;;
+    esac
+}
+
+# ── orphan daemons: `check` and `finish` ───────────────────────────────────
+# WHY THIS EXISTS. A daemon that outlives whoever started it is not harmless
+# noise, it is a source of WRONG ANSWERS, in two ways. A LISTENING orphan holds
+# the port a test run wants: the run's own daemon dies of EADDRINUSE, its checks
+# talk to the stale one and go red — or green — for reasons that have nothing
+# to do with the code. A NON-LISTENING orphan answers nothing but still holds
+# its heap: fourteen of them, the oldest six hours old, hold ~12 GB between
+# them, which is enough to change what a timing measurement says.
+#
+# So: `check` before you start, `finish` when it complains.
+
+# PIDs that hold a listening TCP socket. `ss` on Linux, `lsof` on macOS —
+# neither needs root for the caller's own processes. No `ss -H`: the flag is
+# newer than the tool and an old `ss` would reject the whole invocation, which
+# would silently report every daemon as dead. The header line has no `pid=`, so
+# the sed drops it anyway.
+_listening_pids() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -lntp 2>/dev/null | sed -n 's/.*pid=\([0-9]*\).*/\1/p'
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP -sTCP:LISTEN -t 2>/dev/null
+    fi
+}
+
+# Can we tell a working daemon from a corpse at all? If not, the honest answer
+# is to say so: with no way to see sockets, EVERY daemon looks dead, and a
+# `finish` that believed that would kill the one you are using.
+_can_see_sockets() {
+    command -v ss >/dev/null 2>&1 || command -v lsof >/dev/null 2>&1
+}
+
+# One line per Janim daemon on this machine: `ROLE PID PORT RSS_KB LISTENING`.
+#
+# `yours` is the daemon THIS CLI talks to — either the pid we wrote when we
+# started it, or whoever actually listens on our port, because a daemon started
+# by hand has no pidfile and a pidfile can outlive its process. Everything else
+# is an orphan, listening or not: a stale daemon that is still serving is
+# exactly the one that gives false results.
+#
+# The `ps` snapshot is taken into a variable BEFORE awk runs, so awk cannot
+# match its own command line — its program text contains both `julia` and the
+# port pattern. That is not paranoia: the same self-match is why `pgrep -f
+# "daemon(port = 7363)"` silently matches NOTHING (the parentheses are groups
+# in pgrep's ERE, so the pattern reads as `daemonport = 7363`) and reports a
+# clean machine while fourteen daemons run. Escape them, or match differently.
+_classify_daemons() {
+    local snap listening mine="" blind=0
+    _can_see_sockets || blind=1
+    snap="$(ps -eo pid=,rss=,args= 2>/dev/null)"
+    listening=" $(_listening_pids | tr '\n' ' ') "
+    [[ -f "$PIDFILE" ]] && mine="$(cat "$PIDFILE" 2>/dev/null)"
+    printf '%s\n' "$snap" |
+        awk -v mine="$mine" -v myport="$PORT" -v lst="$listening" -v blind="$blind" '
+        /julia/ && match($0, /daemon\(port *= *[0-9]+\)/) {
+            port = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", port)
+            here = blind ? "unknown" \
+                         : ((index(lst, " " $1 " ") > 0) ? "listening" : "not-listening")
+            role = ($1 == mine || (port == myport && here == "listening")) \
+                   ? "yours" : "orphan"
+            print role, $1, port, $2, here
+        }'
+}
+
+# Is a test run in progress right now? Its daemons look exactly like orphans
+# and are not — killing them mid-run manufactures the false failures this whole
+# section exists to prevent.
+_suites_running() {
+    local snap; snap="$(ps -eo args= 2>/dev/null)"
+    printf '%s\n' "$snap" | grep -Eq 'julia.*(verify_[a-z0-9_.]*\.jl|runtests\.jl)'
+}
+
+# Exits 1 when there are orphans, so it can gate a script or a habit.
+check_cmd() {
+    local n=0 orph=0 kb=0 role pid port rss here
+    while read -r role pid port rss here; do
+        [[ -n "$pid" ]] || continue
+        n=$((n + 1))
+        [[ "$role" == orphan ]] && { orph=$((orph + 1)); kb=$((kb + rss)); }
+        printf '  %-6s pid %-8s port %-6s %5s MB  %s\n' \
+               "$role" "$pid" "$port" "$((rss / 1024))" "$here"
+    done <<< "$(_classify_daemons)"
+
+    ((n)) || { echo "OK no Janim daemon is running on this machine"; return 0; }
+    ((orph)) || { echo "OK $n daemon(s), no orphans"; return 0; }
+    printf 'WARN %d orphan daemon(s) holding %d MB — «janim finish» closes them\n' \
+           "$orph" "$((kb / 1024))"
+    _suites_running &&
+        echo "     …but a test run IS in progress: those may be its daemons, not orphans"
+    return 1
+}
+
+finish_cmd() {
+    local force="no"
+    case "${1:-}" in -f|--force) force="yes" ;; esac
+
+    if ! _can_see_sockets; then
+        echo "ERR neither 'ss' nor 'lsof' is here, so I cannot tell a working" >&2
+        echo "    daemon from a corpse — and guessing would kill yours. Use" >&2
+        echo "    «janim check» to list them and close them by hand." >&2
+        return 1
+    fi
+
+    if [[ "$force" == no ]] && _suites_running; then
+        echo "ERR a test run is in progress — its daemons are not orphans." >&2
+        echo "    Wait for it, or «janim finish -f» if you know it is stuck." >&2
+        return 1
+    fi
+
+    local pids=() kb=0 role pid port rss here
+    while read -r role pid port rss here; do
+        [[ "$role" == orphan ]] || continue
+        pids+=("$pid"); kb=$((kb + rss))
+    done <<< "$(_classify_daemons)"
+    ((${#pids[@]})) || { echo "OK no orphan daemons"; return 0; }
+
+    kill "${pids[@]}" 2>/dev/null || true
+    # TERM first, then insist: a daemon parked inside a GPU call can take a
+    # moment, and one that is wedged there would otherwise survive the cleanup
+    # that just told you it had happened.
+    sleep 1
+    local left=() p
+    for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && left+=("$p"); done
+    ((${#left[@]})) && { kill -9 "${left[@]}" 2>/dev/null || true; }
+    printf 'OK closed %d orphan daemon(s), %d MB freed (pids: %s)\n' \
+           "${#pids[@]}" "$((kb / 1024))" "${pids[*]}"
+}
+
+# ── flags, shared by render/frame/preview ──────────────────────────────────
+# The initialisers live in a function so `resolve_flags` can run the
+# cfg pass and the user pass over a clean slate each time.
+flags_reset() {
+    RES="1280x720"; FPS="30"; OUT=""; JOBS="1"; FROM=""; TO=""; NRANGE=""; OPEN="no"
+    STOPCP="false"; TRANSP="false"; STILL="false"; SAMPLES="0"; MBLUR=""
+    # -w routes the verbless form to render; --out_dir is resolved
+    # by THIS client into a plain -o (the engine reads no directory policy)
+    WRITE="false"; OUTDIR=""
+    # panel/cfg escapes, mainly for agents and scripts: --no-tui skips
+    # the panel (cfg + flags still apply); --only-cli skips BOTH the panel
+    # and the cfg — flags and defaults alone, the fully predictable call.
+    NOTUI="false"; ONLYCLI="false"
+    # provenance the panel needs: which SOURCE set the resolution/fps.
+    # A -q* preset sets QPRESET and clears the explicit pair; -r/--fps set
+    # the explicit marker and clear QPRESET — so the panel can show QUALITY
+    # as the preset letter with WIDTH/HEIGHT/FPS empty, or the overrides
+    # filled and QUALITY empty.
+    QPRESET=""; RES_EXPL="false"; FPS_EXPL="false"
+    POSITIONAL=()
+}
+flags_reset
+_preset_res() { case "$1" in s) echo 640x360;; l) echo 854x480;; m) echo 1280x720;;
+                            h) echo 1920x1080;; q) echo 2560x1440;; k) echo 3840x2160;; esac; }
+_preset_fps() { case "$1" in s) echo 10;; l) echo 15;; m) echo 30;; *) echo 60;; esac; }
+
+# The quality table, in ONE place: `_preset_res`/`_preset_fps`. Two copies of
+# a table are one waiting to disagree with itself.
+#
+# Each preset sets BOTH components and records itself as the SOURCE
+# (QPRESET), which is what lets the panel show QUALITY=letter with the
+# width/height/fps overrides empty. Marking them NOT explicit is what makes a
+# later -r or --fps beat the one component it names and leave the other.
+_apply_quality() {   # $1 = s|l|m|h|q|k
+    RES="$(_preset_res "$1")"
+    FPS="$(_preset_fps "$1")"
+    QPRESET="$1"; RES_EXPL="false"; FPS_EXPL="false"
+}
+
+parse_flags() {
+    while (($#)); do
+        case "$1" in
+            -r|--resolution) RES="$2"; RES_EXPL="true"; QPRESET=""; shift 2 ;;
+            --fps)           FPS="$2"; FPS_EXPL="true"; shift 2 ;;
+            # Quality presets. Each sets BOTH components, and because
+            # they are plain assignments in the same loop, a later -r/--fps
+            # overrides the one it names and nothing else — last flag wins.
+            # They also record themselves as the SOURCE (QPRESET), which
+            # is what lets the panel show QUALITY=letter with empty overrides.
+            -q[slmhqk])      _apply_quality "${1#-q}"; shift ;;
+            # Manim's glued form: -pqm is -p plus -qm, -wqh is -w plus
+            # -qh. Twelve spellings from two patterns, because the letter is
+            # matched by a glob and the table lives in ONE function.
+            #
+            # The order is FIXED at verb-then-quality, as Manim writes it
+            # (-pql). `-qmp` is not accepted: it would double the patterns to
+            # buy a second way of saying the same thing, and this file has a
+            # rule about two mechanisms for one job.
+            #
+            # `-t` is deliberately NOT glued: transparent
+            # output is ProRes 4444 and weighs enough that it is a
+            # final-render decision, not something you carry through a
+            # try-look-try loop. Keeping it separate keeps it deliberate.
+            -pq[slmhqk])     OPEN="yes";   _apply_quality "${1#-pq}"; shift ;;
+            -wq[slmhqk])     WRITE="true"; _apply_quality "${1#-wq}"; shift ;;
+            -o|--output)     OUT="$2"; shift 2 ;;
+            -j|--jobs|--nprocs) JOBS="$2"; shift 2 ;;   # the render farm
+            -n)              NRANGE="$2"; shift 2 ;;    # animations X[,Y]
+            -n*)             NRANGE="${1#-n}"; shift ;; # Manim writes it glued: -n3,5
+            --from)          FROM="$2"; shift 2 ;;
+            --to)            TO="$2"; shift 2 ;;        # pairs with --from
+            --motion-blur)                              # rejected: there is no in-loop motion blur
+                echo "error: --motion-blur is not available: there is no in-loop motion blur." >&2
+                echo "       render_frame_motion(construct, t; n) averages sub-frames on the CPU" >&2
+                echo "       and makes a blurred still." >&2
+                exit 2 ;;
+            -t|--transparent) TRANSP="true"; shift ;;   # alpha (ProRes 4444)
+            -s|--save-frame) STILL="true"; shift ;;     # one frame, like Manim
+            --samples)       SAMPLES="$2"; shift 2 ;;   # MSAA (4 = manimlib 3D, the default; 1 = none)
+            -w|--write)      WRITE="true"; shift ;;     # verbless → render
+            --out_dir|--out-dir) OUTDIR="$2"; shift 2 ;;  # both spellings load
+            -p|--play)       OPEN="yes"; shift ;;
+            -c|--stop-at-checkpoints) STOPCP="true"; shift ;;   # preview
+            --no-tui)        NOTUI="true"; shift ;;     # skip the panel
+            --only-cli)      NOTUI="true"; ONLYCLI="true"; shift ;;  # skip panel AND cfg
+            -h|--help)       usage 0 ;;
+            -*)              echo "ERR unknown flag: $1" >&2; usage 1 ;;
+            *)               POSITIONAL+=("$1"); shift ;;
+        esac
+    done
+}
+
+# ── janim.cfg: a CLI shortener, not an engine config ───────────────────────
+# One CLI flag per line, `#` comments. The ENGINE never reads it (the golden
+# rule above is about the Scene; this file only pre-fills argv in the bash
+# client), it is ANNOUNCED on every use, and user flags win because they are
+# parsed after it. JANIM_NO_CFG=1 ignores it, so a cfg forgotten in a directory
+# cannot contaminate a scripted run in silence.
+
+CFG_ARGS=(); CFG_PATH=""
+
+_find_cfg() {   # $1 = scene path or address (may be empty) → sets CFG_PATH
+    CFG_PATH=""
+    [[ "${JANIM_NO_CFG:-0}" == 1 ]] && return 0
+    # the cfg lives beside the FILE; an address is not a filesystem name
+    local scene_dir="" sp; sp="$(_scene_path "${1:-}")"
+    [[ -n "$sp" && -e "$sp" ]] && scene_dir="$(dirname "$(abs_path "$sp")")"
+    if [[ -n "$scene_dir" && -f "$scene_dir/janim.cfg" ]]; then
+        CFG_PATH="$scene_dir/janim.cfg"
+    elif [[ -f "./janim.cfg" ]]; then
+        CFG_PATH="$(pwd)/janim.cfg"
+    fi
+}
+
+_load_cfg() {   # $1 = scene path → fills CFG_ARGS, announces
+    CFG_ARGS=()
+    _find_cfg "${1:-}"
+    [[ -n "$CFG_PATH" ]] || return 0
+    local line first rest tok
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line%%#*}"
+        read -r first rest <<< "$line" || true
+        [[ -n "${first:-}" ]] || continue
+        if [[ "$first" != -* ]]; then
+            echo "ERR $CFG_PATH: «$first» is not a flag — janim.cfg holds" \
+                 "CLI flags only, one per line" >&2
+            exit 1
+        fi
+        CFG_ARGS+=("$first")
+        for tok in $rest; do CFG_ARGS+=("$tok"); done
+    done < "$CFG_PATH"
+    ((${#CFG_ARGS[@]})) && echo "← $CFG_PATH: ${CFG_ARGS[*]}" >&2
+    return 0
+}
+
+# Two passes over a clean slate each: the cfg first, the user's flags after,
+# so the LAST assignment (the user's) wins — the same rule the -q* presets
+# already live by. The first pass only exists to find the scene path.
+resolve_flags() {
+    flags_reset; parse_flags "$@"
+    [[ "$ONLYCLI" == true ]] && return 0      # flags and defaults alone
+    _load_cfg "${POSITIONAL[0]:-}"
+    ((${#CFG_ARGS[@]})) || return 0
+    flags_reset
+    parse_flags "${CFG_ARGS[@]}"
+    parse_flags "$@"
+}
+
+# ── the panel: a fixed-field TUI over those same flags ─────────────────────
+# Shows on a TTY (render/preview), with the values already merged
+# defaults ← cfg ← user flags; an explicit flag beats the cfg AND is what the
+# panel shows. ENTER renders, Ctrl+S writes janim.cfg and renders, ESC quits.
+# Ctrl+S because the action key must not be any character that fits in a
+# VALUE — `.` lives in `1.5s` and `0.5`, and letters live in QUALITY.
+# The panel PRODUCES flags for the ordinary flow: one source of truth.
+
+
+# panel state ← parsed flags. QUALITY is the compound preset; WIDTH/HEIGHT/
+# FPS are the overrides that beat it only when written.
+_panel_init() {
+    PW=""; PH=""; PFPS=""; PMB=""; PSH=""
+    if [[ "$RES_EXPL" == true ]]; then PW="${RES%x*}"; PH="${RES#*x}"; fi
+    [[ "$FPS_EXPL" == true ]] && PFPS="$FPS"
+    if [[ -n "$MBLUR" ]]; then PMB="${MBLUR%%,*}"; [[ "$MBLUR" == *,* ]] && PSH="${MBLUR#*,}"; fi
+}
+
+# the flags the current panel state means — the bottom line, and what Ctrl+S
+# writes. Only non-defaults appear.
+_panel_flags() {
+    local out=""
+    [[ -n "$QPRESET" ]] && out+=" -q$QPRESET"
+    if [[ -n "$PW" || -n "$PH" ]]; then
+        local w="$PW" h="$PH"
+        [[ -z "$w" ]] && w=$((h * 16 / 9))       # one written → 16:9 twin
+        [[ -z "$h" ]] && h=$((w * 9 / 16))
+        out+=" -r ${w}x${h}"
+    fi
+    [[ -n "$PFPS" ]] && out+=" --fps $PFPS"
+    [[ "$SAMPLES" != 0 ]] && out+=" --samples $SAMPLES"
+    [[ -n "$PMB" ]] && out+=" --motion-blur $PMB${PSH:+,$PSH}"
+    [[ -n "$NRANGE" ]] && out+=" -n $NRANGE"
+    [[ -n "$FROM" ]] && out+=" --from $FROM"
+    [[ -n "$TO" ]] && out+=" --to $TO"
+    [[ "$TRANSP" == true ]] && out+=" -t"
+    [[ "$STOPCP" == true ]] && out+=" -c"
+    [[ "$JOBS" != 1 ]] && out+=" -j $JOBS"
+    [[ -n "$OUTDIR" ]] && out+=" --out_dir $OUTDIR"
+    [[ -n "$OUT" ]] && out+=" -o $OUT"
+    echo "${out# }"
+}
+
+# panel state → the effective variables the normal flow reads
+_panel_apply() {
+    if [[ -n "$QPRESET" ]]; then
+        RES="$(_preset_res "$QPRESET")"; FPS="$(_preset_fps "$QPRESET")"
+    fi
+    local w="$PW" h="$PH"
+    if [[ -n "$w" || -n "$h" ]]; then
+        [[ -z "$w" ]] && w=$((h * 16 / 9))
+        [[ -z "$h" ]] && h=$((w * 9 / 16))
+        RES="${w}x${h}"
+    fi
+    [[ -n "$PFPS" ]] && FPS="$PFPS"
+    MBLUR=""; [[ -n "$PMB" ]] && MBLUR="$PMB${PSH:+,$PSH}"
+}
+
+_save_cfg() {   # $1 = scene path
+    local dest="$CFG_PATH"
+    [[ -z "$dest" ]] && dest="$(dirname "$(abs_path "$1")")/janim.cfg"
+    # `-o` is deliberately NOT persisted: a fixed output in a shared cfg
+    # sends every scene in the directory to the SAME file. Hand-written -o
+    # lines in the cfg still load fine — this only filters the auto-save.
+    local tok line="" skip_next=0
+    {
+        echo "# janim.cfg — CLI flags, one per line (a shortener, not engine state)"
+        echo "# written by the panel; edit freely, or delete to go back to defaults"
+        for tok in $(_panel_flags); do
+            ((skip_next)) && { skip_next=0; continue; }
+            [[ "$tok" == -o ]] && { skip_next=1; continue; }
+            if [[ "$tok" == -* ]]; then
+                [[ -n "$line" ]] && echo "$line"
+                line="$tok"
+            else
+                line+=" $tok"
+            fi
+        done
+        [[ -n "$line" ]] && echo "$line"
+    } > "$dest"
+    echo "✓ saved $dest" >&2
+}
+
+_panel() {      # $1 = render|preview · $2 = scene · returns 1 on ESC
+    local mode="$1" scene="$2"
+    _panel_init
+    local keys labels types
+    if [[ "$mode" == render ]]; then
+        keys=(FROM TO QPRESET PW PH PFPS SAMPLES PMB PSH NRANGE TRANSP JOBS OUT OUTDIR)
+        labels=("FROM" "TO" "QUALITY" "WIDTH" "HEIGHT" "FPS" "SAMPLES" \
+                "MOTION BLUR" "SHUTTER" "N (anims)" "TRANSPARENT" "JOBS" "OUTPUT" "OUT DIR")
+        types=(t t q n n n n n n t b n t t)
+        SPLIT=7
+    else
+        keys=(QPRESET PW PH PFPS SAMPLES STOPCP)
+        labels=("QUALITY" "WIDTH" "HEIGHT" "FPS" "SAMPLES" "STOP AT CPS")
+        types=(q n n n n b)
+        SPLIT=99
+    fi
+    # two `local` lines: a single one would expand $((n + 4)) BEFORE the
+    # builtin runs, and under `set -u` that is «n: unbound»
+    local n=${#keys[@]} sel=0 first=1
+    local total=$((n + 4))
+
+    _draw() {
+        ((first)) || printf '\e[%dA' "$total"
+        first=0
+        printf '\e[1m  janim %s %s\e[0m\e[K\n' "$mode" "$(basename "$scene")"
+        local i v shown
+        for i in "${!keys[@]}"; do
+            [[ $i == "$SPLIT" ]] && printf '  ─────────────────────\e[K\n'
+            v="${!keys[$i]}"
+            case "${types[$i]}" in
+                b) [[ "$v" == true ]] && v="yes" || v="no" ;;
+            esac
+            shown="$v"; [[ -z "$shown" ]] && shown="·"
+            if [[ $i == "$sel" ]]; then
+                printf '  \e[7m %-12s %-14s\e[0m\e[K\n' "${labels[$i]}" "$shown"
+            else
+                printf '   %-12s %-14s\e[K\n' "${labels[$i]}" "$shown"
+            fi
+        done
+        [[ "$SPLIT" -ge $n ]] && printf '\e[K\n'
+        printf '  → janim %s %s %s\e[K\n' "$mode" "$(basename "$scene")" "$(_panel_flags)"
+        printf '  \e[2mENTER render · Ctrl+S save+render · ESC quit · ^J/^K/^H/^L = arrows\e[0m\e[K\n'
+    }
+
+    # LEAVING the panel folds it away and keeps ONE line: the command
+    # it resolved to. The fields and the key legend were scaffolding for
+    # choosing; once the render starts they are noise above the progress
+    # bars, and the only thing worth reading afterwards is what was run.
+    #
+    # `\e[{total}A` walks back over exactly the block `_draw` wrote — the same
+    # count it already uses to redraw in place, so the two cannot drift — and
+    # `\e[J` clears from there to the end of the screen.
+    #
+    # THE LINE IS CAPTURED BEFORE THE ERASE. It has to be: `_panel_apply`
+    # moves the panel's state into the flag variables and `_panel_flags`
+    # reads the panel's, so printing it afterwards is reading a spent source.
+    #
+    # WHAT SURVIVES, on purpose: anything ABOVE the block. The `janim.cfg`
+    # announcement lives there, and it is the one line that explains where
+    # flags nobody typed came from.
+    #
+    # WHAT IT DOES NOT FIX: a terminal shorter than the panel scrolls, and
+    # then `\e[{total}A` lands short. That is already true of every redraw
+    # this panel does on every keypress, so the fold adds no new failure —
+    # it inherits one.
+    _collapse() {   # $1 = keep|drop — whether the command line stays
+        local line
+        line="$(printf '  → janim %s %s %s' "$mode" "$(basename "$scene")" "$(_panel_flags)")"
+        ((first)) || printf '\e[%dA\e[J' "$total"
+        [[ "$1" == keep ]] && printf '%s\n' "$line"
+        return 0
+    }
+    # The arrows and their vim hands share these. `_p_side` cycles
+    # QUALITY through empty→s→l→m→h→q→k and toggles yes/no fields.
+    _p_up()   { ((sel > 0)) && ((sel--)) || true; }
+    _p_down() { ((sel < n - 1)) && ((sel++)) || true; }
+    _p_side() {   # $1 = next|prev
+        t="${types[$sel]}"; key="${keys[$sel]}"; v="${!key}"
+        if [[ "$t" == b ]]; then
+            [[ "$v" == true ]] && printf -v "$key" false || printf -v "$key" true
+        elif [[ "$t" == q ]]; then
+            local opts=("" s l m h q k) idx=0 j
+            for j in "${!opts[@]}"; do
+                [[ "${opts[$j]}" == "$v" ]] && idx=$j
+            done
+            if [[ "$1" == next ]]; then idx=$(( (idx + 1) % 7 ))
+            else                        idx=$(( (idx + 6) % 7 )); fi
+            printf -v "$key" '%s' "${opts[$idx]}"
+        fi
+    }
+    local saved; saved="$(stty -g)"
+    _restore() { stty "$saved"; printf '\e[?25h'; }
+    trap '_restore; exit 130' INT TERM
+    # -icrnl so ENTER stays \x0d and Ctrl+J arrives as its own \x0a — with
+    # the kernel's CR→LF translation on, the two keys are the SAME byte and
+    # a vim hand could never navigate down
+    stty -echo -icanon -ixon -icrnl min 1 time 0
+    printf '\e[?25l'
+
+    local k seq key t v
+    while :; do
+        _draw
+        # The FIRST byte comes through `dd`, not `read`: bash's one-char read
+        # rebuilds its terminal mode from the attributes it cached at STARTUP,
+        # so the -icrnl above is impotent inside it and ENTER's \r reaches it
+        # translated to \n — the same byte as Ctrl+J (measured: dd sees 0d
+        # where read -n1/-N1 both see 0a). `dd` reads under the termios that
+        # is actually set. The `echo x` guard keeps a trailing \n alive
+        # through the substitution, so Ctrl+J is not mistaken for the EOF.
+        k="$(dd bs=1 count=1 2>/dev/null; echo x)"; k="${k%x}"
+        # dd hands back nothing only at EOF: a closed input is not a
+        # keypress, so it CANCELS instead of rendering.
+        if [[ -z "$k" ]]; then
+            _restore; trap - INT TERM; _collapse drop; return 1
+        fi
+        case "$k" in
+            $'\x0d')                       # ENTER
+                _restore; trap - INT TERM
+                _collapse keep; _panel_apply; return 0 ;;
+            $'\x13')                       # Ctrl+S
+                _restore; trap - INT TERM
+                _collapse keep; _panel_apply; _save_cfg "$scene"; return 0 ;;
+            $'\x0a') _p_down ;;            # Ctrl+J (vim)
+            $'\x0b') _p_up ;;              # Ctrl+K (vim)
+            $'\x08') _p_side prev ;;       # Ctrl+H (vim; a ^H backspace acts as ←)
+            $'\x0c') _p_side next ;;       # Ctrl+L (vim)
+            $'\e')
+                seq=""
+                IFS= read -rsn2 -t 0.02 seq || true
+                case "$seq" in
+                    '[A'|'OA') _p_up ;;
+                    '[B'|'OB') _p_down ;;
+                    '[C'|'OC') _p_side next ;;
+                    '[D'|'OD') _p_side prev ;;
+                    # ESC folds the panel away too, and drops the command
+                    # line with it: there was no command. What stays on
+                    # screen is «(cancelled)» and nothing else.
+                    '')   _restore; trap - INT TERM; _collapse drop; return 1 ;;
+                esac ;;
+            $'\x7f')                       # backspace (the \x7f most terminals send)
+                key="${keys[$sel]}"; v="${!key}"
+                [[ "${types[$sel]}" == b ]] || printf -v "$key" '%s' "${v%?}" ;;
+            *)
+                t="${types[$sel]}"; key="${keys[$sel]}"
+                case "$t" in
+                    b) case "$k" in y|Y) printf -v "$key" true ;;
+                                    n|N) printf -v "$key" false ;;
+                                    ' ') v="${!key}"
+                                         [[ "$v" == true ]] && printf -v "$key" false || printf -v "$key" true ;;
+                       esac ;;
+                    q) case "$k" in s|l|m|h|q|k) printf -v "$key" '%s' "$k" ;; esac ;;
+                    *) [[ "$k" == [\ -~] ]] && { v="${!key}"; printf -v "$key" '%s' "$v$k"; } ;;
+                esac ;;
+        esac
+    done
+}
+
+# The render/preview bodies live in functions so the VERBLESS form
+# can resolve the flags once and then dispatch to either one — a second
+# resolve would announce the cfg twice. Both assume resolve_flags already ran.
+render_go() {
+    ((${#POSITIONAL[@]})) || { echo "ERR render needs a scene" >&2; exit 1; }
+    local scene; scene="$(abs_path "${POSITIONAL[0]}")"
+    # The panel: only where a human is (a TTY on both ends),
+    # never under -s (a still is a one-shot verb) or --no-tui. A pipe
+    # or a script falls straight through — nothing ever waits on it.
+    if [[ -t 0 && -t 1 && "$NOTUI" != true && "$STILL" != true ]]; then
+        _panel render "$scene" || { echo "(cancelled)"; exit 0; }
+    fi
+    # With -t the default output is .mov, as in Manim: the
+    # alpha travels in ProRes 4444 and an .mp4 cannot carry it.
+    # --out_dir joins HERE, in the client, and mkdir -p's: the
+    # engine keeps receiving one plain -o and reads no directory policy.
+    # An absolute -o already names its place, so it wins — with a warning,
+    # because a flag that quietly loses is a defect.
+    local ext=".mp4"; [[ "$TRANSP" == true ]] && ext=".mov"
+    if [[ -z "$OUT" ]]; then
+        # `x.jl:intro` defaults to `x_intro.mp4` — `${scene%.jl}` cannot
+        # trim an address, so split first.
+        local sbase sname
+        sbase="$(_scene_path "$scene")"; sbase="${sbase%.jl}"
+        sname="$(_scene_name "$scene")"
+        sbase="$sbase${sname:+_$sname}"
+        if [[ -n "$OUTDIR" ]]; then
+            OUT="$OUTDIR/$(basename "$sbase")$ext"
+        else
+            OUT="$sbase$ext"
+        fi
+    elif [[ -n "$OUTDIR" ]]; then
+        case "$OUT" in
+            /*) echo "WARN --out_dir ignored: -o $OUT is absolute and already says where" >&2 ;;
+            *)  OUT="$OUTDIR/$OUT" ;;
+        esac
+    fi
+    OUT="$(abs_path "$OUT")"
+    [[ -n "$OUTDIR" ]] && mkdir -p "$(dirname "$OUT")"
+    # Every optional field goes as `-` when absent, NEVER as "". `talk`
+    # joins with spaces and the daemon splits on whitespace runs, so an
+    # empty field VANISHES and every field after it shifts one to the
+    # left: a blur spec with no --from would arrive as the checkpoint
+    # label.
+    # The reply is captured so that -p opens the file that EXISTS: the
+    # daemon answers `OK <path> …` and that path is not always $OUT —
+    # a scene with no animations is written as a still (.png), like
+    # Manim does. PROG lines go to stderr, so the bar still streams.
+    # `|| rc=$?` is not decoration: under `set -e` a captured
+    # command substitution that fails kills the script BEFORE the reply
+    # can be printed, swallowing the message and leaving a bare `exit 1`.
+    local reply rc=0
+    reply="$(talk_stream mp4 "$scene" "$OUT" "$FPS" "$RES" "$JOBS" \
+             "${FROM:--}" "${MBLUR:--}" "${NRANGE:--}" "${TO:--}" "$TRANSP" \
+             "$STILL" "$SAMPLES")" || rc=$?
+    [[ -z "$reply" ]] || printf '%s\n' "$reply"
+    if [[ "$OPEN" == yes && $rc -eq 0 ]]; then
+        open_output "$(printf '%s\n' "$reply" | awk 'NR==1{print $2}')"
+    fi
+    exit $rc
+}
+
+preview_go() {
+    # With the daemon up, the live window runs IN the warm process:
+    # opening it costs a window, not a Julia. `talk` then blocks until
+    # the window closes (Esc/q, the close button) — and a Ctrl-C here
+    # kills this client, whose closed socket is exactly the signal the
+    # daemon's `abort` watches. Cold start survives only as the
+    # fallback, and it says so instead of pretending to be instant.
+    ((${#POSITIONAL[@]})) || { echo "ERR preview needs a scene" >&2; exit 1; }
+    # A live window composites onto an opaque window, so alpha
+    # has no meaning here. SAY SO: a flag that is accepted and quietly
+    # does nothing is a defect.
+    if [[ "$TRANSP" == true ]]; then
+        echo "ERR -t makes no sense for preview: a live window has no" \
+             "alpha to show. Use it on 'janim render' or 'janim frame'." >&2
+        exit 1
+    fi
+    # The explicit verb wins, out loud: `preview -w/-p` asks for a
+    # window AND a file at once. The verbless `janim scene.jl -w/-p` routes
+    # to render, so this branch is only reachable with the verb spelled out
+    # (or a -w saved in a cfg — loud is how you find that one too).
+    if [[ "$WRITE" == true || "$OPEN" == yes ]]; then
+        echo "ERR -w/-p write a video, but 'preview' opens a window. Drop the" >&2
+        echo "    verb («janim scene.jl -w») or use 'janim render'." >&2
+        exit 1
+    fi
+    local scene; scene="$(abs_path "${POSITIONAL[0]}")"
+    if [[ -t 0 && -t 1 && "$NOTUI" != true ]]; then
+        _panel preview "$scene" || { echo "(cancelled)"; exit 0; }
+    fi
+    if try_talk ping >/dev/null 2>&1; then
+        echo "live window on the warm daemon — Esc/q closes it (Ctrl-C here too)"
+        local reply
+        # Field 6 is max_seconds, which the CLI never uses — `-` is the
+        # protocol's placeholder — so samples can ride at the END (field 7).
+        reply="$(talk_stream preview "$scene" "$FPS" "$RES" "$STOPCP" - "$SAMPLES" || true)"
+        case "$reply" in
+            OK*) echo "$reply"; return 0 ;;
+            *"unknown command"*)   # a stale daemon that lacks this verb
+                echo "this daemon predates 'preview': janim daemon stop && janim daemon start" ;;
+            *) echo "$reply" >&2; exit 1 ;;
+        esac
+    fi
+    local root; root="$(janim_root)"
+    echo "no daemon: opening the live window cold (~4 s of Julia startup;"
+    echo "           'janim daemon start' makes the next preview warm)"
+    strict_gl_export
+    # -r must reach `live` explicitly: otherwise it takes its own
+    # default, and `janim preview -r 640x360` would silently render 1280x720.
+    exec julia --project="$root" --startup-file=no \
+         -e "using Janim; live(\"${scene}\"; fps = $FPS,
+             resolution = (${RES%x*}, ${RES#*x}),
+             stop_at_checkpoints = $STOPCP, samples = $SAMPLES)"
+}
+
+main() {
+    (($#)) || usage 0
+    local cmd="$1"; shift
+    case "$cmd" in
+        ping)   talk ping ;;
+        stop)   talk stop ;;
+        codecs) talk codecs ;;
+        daemon) daemon_cmd "${1:-status}" ;;
+        check)  check_cmd ;;
+        finish) finish_cmd "${1:-}" ;;
+        states)
+            parse_flags "$@"
+            ((${#POSITIONAL[@]})) || { echo "ERR states needs a scene" >&2; exit 1; }
+            talk states "$(abs_path "${POSITIONAL[0]}")" ;;
+        frame)
+            resolve_flags "$@"        # the cfg pre-fills; no panel here
+            ((${#POSITIONAL[@]} >= 3)) || {
+                echo "ERR frame <scene.jl> <K> <out.png>" >&2; exit 1; }
+            # --out_dir reaches the still too (a cfg line means both
+            # verbs); an absolute path already says where and wins.
+            local fout="${POSITIONAL[2]}"
+            [[ -n "$OUTDIR" && "$fout" != /* ]] && fout="$OUTDIR/$fout"
+            fout="$(abs_path "$fout")"
+            [[ -n "$OUTDIR" ]] && mkdir -p "$(dirname "$fout")"
+            talk render "$(abs_path "${POSITIONAL[0]}")" "${POSITIONAL[1]}" \
+                 "$fout" "$FPS" "$RES" "$TRANSP" "$SAMPLES" ;;
+        render)
+            resolve_flags "$@"
+            render_go ;;
+        preview)
+            resolve_flags "$@"        # cfg → flags → (maybe) the panel
+            preview_go ;;
+        -h|--help|help) usage 0 ;;
+        *)
+            # No verb, manimgl-style: `janim scene.jl` is a preview,
+            # `-w` writes the video (render), `-p` writes and opens, `-s` is
+            # the still. ONE resolve_flags, then dispatch — the cfg loads
+            # (and announces) once, and a cfg's -w can flip a directory's
+            # verbless default to "write", which is a feature, not a leak.
+            # *.jl:* keeps the verbless form alive for addresses:
+            # `janim x.jl:intro` is a preview of that scene, not a typo.
+            if [[ "$cmd" == *.jl || "$cmd" == *.jl:* || "$cmd" == -* ]]; then
+                resolve_flags "$cmd" "$@"
+                if [[ "$WRITE" == true || "$OPEN" == yes || "$STILL" == true ]]; then
+                    render_go
+                else
+                    preview_go
+                fi
+            else
+                echo "ERR unknown command: $cmd" >&2
+                usage 1
+            fi ;;
+    esac
+}
+
+main "$@"

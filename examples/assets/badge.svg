@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- examples/assets/badge.svg — hand written for lesson 2.4 of course 1.
+     Every element carries an id, because SVGMobject turns ids into KEYS:
+     svg["sun"] addresses that child. It also exercises a linear gradient
+     (evaluated per fragment) and a clipPath (which clip_layers turns into a
+     real per-pixel mask). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#58C4DD"/>
+      <stop offset="1" stop-color="#1B3A57"/>
+    </linearGradient>
+    <clipPath id="window" clipPathUnits="userSpaceOnUse">
+      <circle cx="60" cy="62" r="42"/>
+    </clipPath>
+  </defs>
+
+  <rect id="frame" x="6" y="6" width="108" height="108" rx="10"
+        fill="none" stroke="#DDDDDD" stroke-width="3"/>
+
+  <rect id="sky-fill" clip-path="url(#window)"
+        x="0" y="0" width="120" height="120" fill="url(#sky)"/>
+  <polygon id="peak" clip-path="url(#window)"
+           points="18,100 54,46 90,100" fill="#7FDD58"/>
+  <circle id="sun" clip-path="url(#window)"
+          cx="88" cy="36" r="12" fill="#FFD25E"/>
+</svg>

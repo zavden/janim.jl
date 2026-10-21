@@ -1,0 +1,586 @@
+# Janim.jl
+
+> A mathematical animation engine in Julia, Manim style (the same narrated
+> English API: Circle, Transform, play!) with its own WebGPU renderer,
+> deterministic output (same code → same frames, byte for byte; the mp4
+> file itself too with `encoder_threads = 1`), a layer compositor with
+> masks and effects, text/math without LaTeX (0.2–0.4 ms per formula), 3D
+> with a quaternion camera, SciML physics inside updaters, farm rendering
+> across processes, and a TCP daemon for agents.
+
+For an AI agent: the right way to generate content is to write Manim-style
+Julia code (see the template), render single frames through the daemon, and
+LOOK at the PNG before calling anything done.
+
+## Minimal scene template
+
+```julia
+using Janim
+
+function construct(scene)
+    c = Circle(radius = 1.0)
+    set_fill!(c; color = YELLOW, opacity = 1.0)
+    play!(scene, FadeIn(c; shift = 0.5 * UP); run_time = 0.5)
+    play!(scene, Transform(c, Square()); run_time = 1.0)
+    wait!(scene, 0.5)
+end
+
+# a full mp4:
+Scene(construct; output = "output.mp4", fps = 30, resolution = (1280, 720))
+# a single frame (no video), e.g. for inspection:
+render_frame(construct, 0.75; fps = 30, resolution = (854, 480), png = "f.png")
+```
+
+`construct` is a CONTRACT, not a convention: the daemon, the render farm and
+the live window look that name up in your script.
+
+A file may define SEVERAL scene functions. Address one as
+`file.jl:name` anywhere a scene file is accepted — `bin/janim render
+x.jl:intro` (the default output becomes `x_intro.mp4`), `bin/janim frame
+x.jl:intro 1 f.png`, `live("x.jl:intro")`, `-j` (the farm) and `--from`
+(checkpoints are kept per scene; a label written by two scenes is never
+served). No suffix means `construct`. The split is at the
+LAST `:` and only when the left side ends in `.jl`, so Windows drive letters
+and colons inside directories stay part of the path. A wrong name fails
+naming the file and the symbol; there is deliberately no scene enumeration —
+a helper `f(x)` is indistinguishable from a scene by signature.
+
+## The agent loop
+
+- `render_frame(construct, t; png=...)` — the frame at t, headless,
+  deterministic.
+- `describe(scene)` — the scene's state as text (no rendering). From inside
+  `construct`, or on a scene you built yourself.
+- `describe(construct, t)` — the same text AT the frame containing `t`,
+  captured exactly where `render_frame` captures its pixels. It
+  SIMULATES the scene, so unlike `describe(scene)` it OPENS a GPU context
+  (the driver line you see is real): on a shared GPU, planning a scene is not
+  free either — do not run it beside a timing measurement.
+- `animation_map(construct)` → (act start frames, total) — the numbered
+  play!/wait! map without presenting anything; pick meaningful frames to
+  look at instead of guessing times. It opens a GPU context too (the same
+  simulation with every frame's drawing skipped), for the same reason.
+- daemon: `julia --project=. -e 'using Janim; daemon()'` (port 7318), or
+  `bin/janim daemon start`. One frame: `bin/janim frame scene.jl <K> out.png`
+  (~17 ms warm, cached by (path, scene name, mtime, frame, fps, resolution,
+  transparent, samples)); a whole video: `bin/janim render scene.jl`.
+  A frame is a RE-SIMULATION from t = 0 — there is no state to rewind, by
+  design — so a late frame costs the whole prefix (measured: 16 s for one
+  frame of a 37 s film). To look at several frames of a long scene, render
+  the mp4 once and cut them out: `ffmpeg -i out.mp4 -vf "select='eq(n,K)'"
+  -vframes 1 fK.png`. And `-n X,Y` on `render` counts ANIMATIONS
+  (play!/wait!, from 1), never frames.
+- BEFORE YOU START EDITING: `bin/janim check`, and `bin/janim finish` if it
+  complains. Orphan daemons from a previous run give WRONG ANSWERS — a
+  listening one holds the port (so a new daemon dies of EADDRINUSE and your
+  commands talk to the stale one) and a dead one still holds its heap
+  (fourteen of them hold ~12 GB, enough to move a timing).
+  `finish` keeps your own daemon and refuses while a test run is in progress.
+- Progress: CE-style per-animation bar. `Scene(...; progress = :auto)` shows
+  it on a TTY's stderr; daemon `mp4`/`preview` STREAM it (`PROG`/`PROGN`
+  lines before the final OK) and the CLI draws it.
+- Live window with hot reload: `live("scene.jl")` (Revise; edit → see it in
+  ~80 ms; Esc/q quits, space pauses, ,/. step by step, ←/→ jump 1 s).
+  Playback is REAL TIME (construct runs once as a coroutine, O(1) per frame;
+  jumps backward re-simulate exactly).
+  `bin/janim preview scene.jl` opens it IN the warm daemon when one is up
+  (protocol verb `preview`); Ctrl-C on the client also closes the window.
+  `--samples 4` previews with the SAME MSAA a render would use —
+  what you see is what `janim render --samples 4` writes.
+
+## Essential API (exports, Manim style)
+
+- Shapes: Circle, Square, Rectangle, Polygon, RegularPolygon, Triangle, Arc,
+  VGroup, VMobject, Ellipse, Annulus, Sector, AnnularSector, ArcBetweenPoints,
+  RoundedRectangle (round_corners!), Star, Elbow, Angle/RightAngle (+
+  angle_value), TracedPath; 3D: Sphere, Torus, PlaneXY, Surface, Cylinder,
+  Cone, Dot3D, Line3D, Arrow3D, SurfaceMesh(surface; resolution=(21,11)).
+  Curves f(x,y)=0: ImplicitFunction(f; x_range, y_range, min_depth=5, max_quads=1500,
+  use_smoothing=false) — one subpath per connected piece.
+  Meshes: ThreeDModel("file.obj"; height=3) — a Group, one mesh per MTL material
+  (map_Kd → textured, Kd → coloured), lit, depth-tested, centred.
+- Style: set_fill!(m; color, opacity), set_stroke!(m; color, width, opacity).
+- Transforms: shift!, scale!, rotate!, move_to!, set_width!, flip!,
+  apply_points_function!.
+- Relative layout (ALWAYS use this instead of hand-written coordinates):
+  next_to!(m, other, RIGHT; buff, aligned_edge), to_edge!(m, UP),
+  to_corner!(m, UR), align_to!(m, other, LEFT), arrange!(group, DOWN; buff),
+  arrange_in_grid!(group; n_rows, n_cols, buff), center!, set_x!/set_y!,
+  match_width!/match_height!/match_color!/match_style!, replace!, surround!.
+- Annotation primitives: Line(a, b; buff, path_arc), Arrow(a, b; buff,
+  thickness), Dot(p; radius), SmallDot(p) (half a Dot: radius 0.04). `a` and
+  `b` may be mobjects: their edges are used. CAREFUL with Dot: it fixes
+  fill_color=WHITE itself, so `color=` is swallowed — write
+  `Dot(p; fill_color = BLUE)`. GL does the same; only CE honours `color` there.
+- Arrow and line variants: VectorMobject(direction) (an Arrow from the ORIGIN,
+  buff 0 — Manim's `Vector`, renamed because Base.Vector is Array{T,1}),
+  DoubleArrow / CurvedDoubleArrow (a VGroup of two halves meeting in the
+  middle: this engine's arrow has no detachable tip), CurvedArrow(a, b; angle)
+  (= Arrow with path_arc), TangentLine(mob, alpha; length), StrokeArrow (a
+  stroked shaft plus a filled head, so the shaft keeps its screen width under a
+  zoom). CE's tip zoo (StealthTip, ArrowTriangleTip, …) is NOT ported: a Janim
+  Arrow is one contour with the head built in and no children to swap.
+- Screen-sized rectangles: ScreenRectangle(; aspect_ratio, height) (16:9 by
+  default), FullScreenRectangle() (the GREY_E backdrop that covers the frame),
+  FullScreenFadeRectangle() (black at 70%: add it OVER the scene to dim
+  everything, then add what you want to stay bright). Note these are ManimGL's
+  definitions — CE's FullScreenRectangle is a different, unfilled mobject.
+- VDict("a" => circle, "b" => square): a VGroup addressed by name. d["a"] is
+  the mobject itself, d["c"] = m adds, delete!(d, "a") removes, keys(d) gives
+  the names in insertion order. Storing a mobject re-labels it (the dictionary
+  owns the key), and re-assigning an existing key moves it to the end.
+- VGroup3D(mobs...): a VGroup with depth_test on, shading (0.2,0.2,0.2) and
+  joint_type :no_joint — the three things flat geometry needs to read as solid
+  in space. PGroup(clouds...): a Group that REFUSES anything but point clouds.
+- Vertex-list shapes: Polygram(group1, group2, ...) (several closed contours in
+  ONE mobject), RegularPolygram(n; density) (the {n/density} star — gcd(n,d)
+  contours, so the hexagram is TWO triangles), ConvexHull(points...) (Andrew's
+  monotone chain; interior points dropped, collinear ones refused),
+  Polyline(pts...) (open, unlike Polygon), CubicBezier(a0,h0,h1,a1) (split into
+  two quadratics, endpoints exact), ArcPolygon(corners...; angle | radius)
+  (closed figure with curved sides).
+- Deforming by a function of the points: Homotopy(f, m) with f(x,y,z,t) — it
+  resets to the ORIGINAL points every frame, so it is stateless and seekable;
+  ComplexHomotopy(f(z,t), m); SmoothedVectorizedHomotopy (= smooth_handles);
+  ApplyWave(m; direction, amplitude, ripples) (starts and ends at rest);
+  PhaseFlow(f, m; virtual_time) — the ONE that INTEGRATES (p += dt·f(p)), so
+  it accumulates and is NOT seekable, on purpose. And the Transform-towards-a-
+  target side: ApplyPointwiseFunction(f, m), ApplyMatrix(M, m; about_point)
+  (2×2 lifted to 3×3), ApplyComplexFunction(f, m).
+  THE LIMIT worth knowing: f only ever sees the CONTROL POINTS, handles
+  included. A Square has four, so it deforms into a parallelogram with straight
+  sides however curved f is. Give a shape intermediate points first (a Polyline
+  through them) if you need its sides to bow.
+- Photograph and go back: save_state!(m) … Restore(m) (or restore! for the
+  instant version), and generate_target!(m) → a copy you modify … MoveToTarget(m).
+  ApplyFunction(f, m) is the same with the copy handled for you; ApplyMethod is
+  CE's name for `animate`. The copies live in weak tables beside the mobject.
+  ONE TRAP: restoring goes through become!, which REPLACES children when the
+  structures differ — a reference to an old child is then orphaned.
+- Animation sugar: FadeToColor, ScaleInPlace, FadeInFromPoint/FadeOutToPoint,
+  CyclicReplace/Swap (they travel along arcs so they do not cross), CircleIndicate,
+  LaggedStartMap(f, group), BroadcastRipple (Manim's `Broadcast`: Base owns that
+  module), Blink, VFadeIn/VFadeOut/VFadeInThenOut (opacity ONLY — no points move,
+  so they do not fight an updater), ShowIncreasingSubsets / ShowSubmobjectsOneByOne
+  (rate_func linear: every child the same slice of time),
+  MaintainPositionRelativeTo.
+- Partial strokes, all one travelling window over pointwise_become_partial!:
+  VShowPassingFlash / ShowPassingFlash(m; time_width), FlashAround, FlashUnder,
+  ShowCreationThenDestruction, ShowCreationThenFadeOut, TurnInsideOut,
+  AddTextLetterByLetter (typewriter, vs Write's handwriting), TypeWithCursor.
+- Composed text and ornaments: Paragraph(lines...), BulletedList(items...),
+  TexText (LaTeX in text mode), Cutout(shape, holes...) (REAL holes: each hole is
+  the same path wound the other way, so the nonzero rule cuts it out), Checkmark, Exmark,
+  Clock(; hour, minute) (the hour hand moves with the minutes), VHighlight (a halo
+  of concentric copies — works on a Tex too), TracingTail (a TracedPath that
+  fades as it ages; use set_z_index! and NOT bring_to_back!, which also moves the
+  UPDATE order and makes the tail lag a frame).
+- Polyhedra, all VGroup3D: Polyhedron(vertices, faces) is the mechanism (1-based
+  index lists, the OFF format), and Tetrahedron/Octahedron/Icosahedron/
+  Dodecahedron(; edge_length=1) sit on it. Unlike CE's these are the FACES
+  ALONE, so they scale linearly with edge_length (CE's carry fixed-size vertex
+  dots and do not). Cube(; side_length=2, color, opacity, square_resolution)
+  is GL's: a Group of six Square3D MESHES, one draw per face instead of a
+  fill pass (7.7x per face, measured) — VCube is the six-polygon one, and the
+  one to reach for when the faces need a stroke. Prism(; width, height,
+  depth) / VPrism the same pair, Prismify(flat; depth, direction) extrudes a
+  flat shape (vector, as in GL).
+- Three different centres, do not confuse them:
+  · get_center(m) — the middle of the bounding box. What move_to!/rotate! use.
+  · get_center_of_mass(m) — manim's: the MEAN of every control point of the
+    family. Handles count, and a closed polygon repeats its first vertex, so a
+    Triangle's is (0, 1/7) and a Star()'s is (0, 1/21) = outer_radius/npoints.
+    It matches ManimGL exactly and NOT Manim CE. **It is not a centre of mass
+    and in GL's form it is not even a property of the shape** — rotate the
+    vertex list and the answer moves.
+  · get_real_center_of_mass(m) — the actual area centroid, where the shape
+    would balance. Janim only; neither engine has it. Exact (Green's theorem
+    over the quadratic Béziers, 3-node Gauss is exact to degree 5, no
+    sampling), signed so HOLES subtract, planar in xy, and it throws
+    ArgumentError on a shape with no area (a Line, an open arc).
+- A point along a path: point_from_proportion(m, α) weighs each curve by its
+  chord, quick_point_from_proportion(m, α) splits α equally between curves.
+  Identical on a Line/Arc/Circle/regular polygon; 1.5 scene units apart at
+  α=0.25 on a 4×1 Rectangle. Use the first to lay things out along a curve.
+  MoveAlongPath uses the QUICK one, because manimlib's does — that is not a
+  bug to fix. get_arc_length(m; n_sample_points).
+- The curve tools (manimgl's): reverse_points!(m) runs the path
+  backwards, subpath by subpath (the end markers are moved first, so holes
+  survive); insert_n_curves!(m, n) adds n curves without moving the path
+  (longest first — the points a function of the points needs to bend);
+  get_subcurve(m, a, b) is a copy of the [a, b] piece, point count kept;
+  CurvesAsSubmobjects(m) one child per curve; append_vectorized_mobject!(m,
+  other) continues the path with other's points AND style (add_subpath!(m,
+  other) is the same). On a Line: get_length (the chord), set_length!(l, L),
+  set_angle!(l, θ) (pivots on the START, like GL); on a Circle:
+  point_at_angle(c, θ) — on the drawn Bézier, absolute angle even if the
+  circle was rotated; get_arc_center/get_start_angle read the arc off its
+  points. get_x/get_y/get_z(m, direction) are set_x!'s readers.
+  VectorizedPoint(p) is a one-point VMobject that measures 1e-6 (never a zero
+  to divide by). line_intersection([a, b], [c, d]) takes GL's pairs.
+  bezier(points)(t) evaluates over Point3f control points, not only numbers.
+- Curves from a function: ParametricCurve(t -> (x, y, z); t_range=(t0,
+  t1, step), discontinuities=[…], use_smoothing=true) — manimgl's sampling,
+  t_max always appended, and a discontinuity CUTS the path instead of drawing
+  the jump; FunctionGraph(f; x_range=(-8, 8, 0.25)) is y=f(x) in scene units
+  (born #DDDDDD, which is what GL's really is: it swallows its own `color`);
+  get_parametric_curve(ax, t -> (x, y)) draws one through the axes' map.
+- Style in one call: set_style!(m; fill_color, fill_opacity,
+  stroke_color, stroke_opacity, stroke_width, shading, recurse=true) — what
+  you do not name is not touched; fade!(m, 0.5) is set_opacity!(m, 0.5) under
+  GL's name; stretch_to_fit_width!/height!/depth!(m, v) resize ONE dimension;
+  get_corner(m, UL) and get_edge_center(m, UP) are get_bounding_box_point;
+  add_background_rectangle!(m) puts a BackgroundRectangle behind it.
+- Colour numbers (manimlib/utils/color.py): color_to_rgb, color_to_rgba,
+  rgb_to_color, rgba_to_color, rgb_to_hex, hex_to_rgb, color_to_hex,
+  invert_color. Hex comes out UPPERCASE and rounds GL's way (0.5 → "#7F"), so
+  rgb_to_hex(color_to_rgb(RED)) is "#FC6255" again. DEGREES is DEG's long name.
+- Parts by OCCURRENCE: get_parts_by_tex(t, "x^2") is a VGroup of
+  VGroups, one per occurrence (manimgl's get_parts_by_tex), and
+  get_part_by_tex(t, "x^2", 2) is the second one. tex["x^2"] stays the flat
+  UNION of every glyph the key names — a different question, and the one
+  TransformMatchingTex pairs against.
+  t2c takes an ORDERED list of pairs when two keys overlap, like Python's
+  dict: t2c = ["x" => GREEN, "x^2" => RED] leaves the x RED, as GL does.
+  LTex/LMathTex/TexText take alignment = raw"\centering" (emitted only when
+  asked for, so every other document is byte-identical).
+- Parts by key: every glyph of Tex(via=:math)/TextMobject carries its
+  character as a key → tex["x"] is a (memoised) VGroup with those x's;
+  tex[3], tex[2:4] by index. set_key!/get_keys/find_by_key to label your own.
+- Animations: play!(scene, anim; run_time), wait!(scene, t); Transform (with
+  path_arc for curved trajectories), FadeIn, FadeOut, ShowCreation/Create,
+  AnimationGroup, Succession, LaggedStart, TransformMatchingTex (keys; `match_shapes=true`
+  pairs the leftovers by resemblance), TransformMatchingShapes (no keys: a Hungarian
+  assignment over GL's shape distance, pairs under `threshold=0.05` morph, the rest fade).
+  Animations END like ManimGL: `finish!` lands on `final_alpha` (1.0; a
+  FadeOut/VFadeOut/FadeOutToPoint has 0.0, so the mobject comes back INTACT
+  and the stage hides it — `FadeOut(m; final_alpha = 1.0)` leaves it dark),
+  then `clean_up!(anim, stage)` runs on Scene AND Timeline: removers
+  leave, ReplacementTransform/TransformMatchingTex/FadeTransform leave the REAL
+  target where the source stood (inside its Layer under a composition),
+  `Wait(t)` is a pause animation for composing. `remove!(stage, child)` has
+  GL's semantics: the group is ungrouped and the siblings stay, and it reaches
+  the compositor's Layers/Masks. A morph between families of different sizes
+  pads with INVISIBLE copies (GL; `Transform(a, b; padding = :visible)` keeps
+  the visible copies). `FadeIn(m; scale = 2)`, `LaggedStartMap(f, g; kw...)`
+  hands `kw` to each child.
+  THE DEFAULTS ARE ManimGL's, and the other behaviour is one explicit keyword
+  away: `ShowCreation` staggers a group (`lag_ratio = 1.0`;
+  `0.0` for all at once) · `play!(a, b; run_time = T)` gives T to EACH
+  animation, GL's `update_rate_info` — `AnimationGroup(a, b; run_time = T)`
+  is the form that shares T · `LaggedStartMap` lasts 2.0 s (`run_time = -1`
+  computes it) · `set_z_index!` recurses (`recurse = false`) · `DashedLine`
+  cuts `dash_length = 0.05` with GL's `ceil` count, 30 dashes in 3 units ·
+  `Angle`/`RightAngle`/`plot` are born `#DDDDDD` at width 4 ·
+  `ShowPassingFlash` is a remover (`remover = false`) · `add_sound(…;
+  time_offset)` counts from NOW, resolves `.wav`/`.mp3`, and the mux does
+  not cut the video to the last cue (`-t`, not `-shortest`) ·
+  `DecimalNumber` fixes its LEFT edge on a digit change (`edge_to_fix =
+  ORIGIN` re-centres) · `interpolate_color`/`color_gradient` mix the SQUARES
+  like GL, `#BD9BA7` at ½ RED→BLUE (`by = :channels` is CE's) ·
+  `DEFAULT_DOT_RADIUS` is the 0.05 GL exports, `Dot()` is 0.08 ·
+  `add!(stage, m)` is GL's remove-then-append, so nothing is ever drawn twice
+  (`recurse = false` appends), and `play!` only adds what is nowhere on stage
+  yet · `Cube`/`Prism` are MESHES (`VCube`/`VPrism` are the polygons) · text
+  is born at `font_size = 48`. The fill is stencil-then-cover, so there is
+  no winding weight to cap: an opaque fill is its own byte.
+- Optional sugar for the receiver: write `@scene sc` once INSIDE
+  `function construct(sc)` and then @play(a, b; run_time = 2) / @wait 0.5.
+  Each is ONE substitution — @play(…) IS play!(sc, …), so everything play!
+  documents still holds — and the binding is lexical, NOT a current-scene
+  global. `sc` keeps working beside them; a Timeline works too. Two edges:
+  @scene at FILE level writes a module global that a function forgetting its
+  own would silently use; and there is NO @add/@remove because `add!` is also
+  a mobject's verb, so @add(g, c) would quietly mean add!(sc, g, c).
+- Drawing and appearing: Write(m) / Unwrite(m) for text and formulas,
+  DrawBorderThenFill(m), Uncreate(m), GrowFromCenter/GrowFromPoint/
+  GrowFromEdge/GrowArrow, SpinInFromNothing, ShrinkToCenter, and
+  UpdateFromAlphaFunc(m, (m, α) -> …) as the generic escape valve (it takes
+  no snapshot, so it also drives a Surface).
+- DrawCurvedArrow(start, stop; path_arc, tip_start_scale, tip_reveal_portion,
+  arrow kwargs...) — Janim only, neither engine has it. A curved arrow that is
+  DRAWN, not scaled: the head rides the leading end at full size along the
+  arc. GrowArrow is GrowFromPoint, so it INFLATES the arrow instead; both are
+  here and they are different animations. It takes the arrow's ARGUMENTS (it
+  rebuilds the partial arrow each frame and a built Arrow does not remember
+  its arc), and `play!` registers the mobject it makes. Colour it with
+  fill_color: an Arrow is drawn by its fill and `color` sets a stroke of
+  width 0 that nobody draws (ManimGL does the same).
+- DimensionLine(start, stop; color, stroke_width, tip_length, tip_width,
+  max_tip_length_ratio) — Janim only. The measurement line of a technical
+  drawing: a thin shaft with two INWARD darts, tip sizes absolute (not a
+  ratio of the length), so nothing overhangs the two points you named. A
+  VGroup of (shaft, dart, dart); two coincident points give an empty group.
+- Rates: linear, smooth, rush_into/from, slow_into, double_smooth,
+  there_and_back(_with_pause), running_start, overshoot, wiggle, lingering,
+  exponential_decay, not_quite_there, squish_rate_func, and the easings.net
+  family ease_{in,out,in_out}_{sine,quad,cubic,quart,quint,expo,circ,back,
+  elastic,bounce}.
+- Updaters: add_updater!(m, (m, dt) -> …) — rule: inside an updater that
+  creates points, the mobject must be born with its final style (new points
+  re-stamp the factory style).
+- Text: Tex(formula; via=:math|:latex|:typst, font_size=48), TextMobject(s; font,
+  t2c=Dict("word"=>YELLOW, 2:5=>RED), t2w=Dict("word"=>:bold)).
+- Addressing a formula: Tex(f; isolate=["x^2"]) then tex["x^2"]; t2c=Dict("x"=>RED)
+  colours the parts; Tex("f(","x",")","+h") joins with spaces and isolates each
+  argument (manimgl). Works on :math (every glyph knows its character) and on
+  :latex (one compile with each part in a colour, attributed back) — through
+  :latex a glyph answers only to the isolate/t2c you gave. Not on :typst.
+- Real LaTeX with your own packages (CE's Tex/MathTex): LTex(text) is TEXT
+  mode, LMathTex(formula) is math mode, both take a TexTemplate:
+  `tpl = TexTemplate(); add_to_preamble!(tpl, raw"\usepackage{physics}");
+  LMathTex(raw"\dv{f}{x}"; template = tpl)`. Each fails where the other is
+  right (bare `x^2` needs LMathTex; a bare `$` inside LMathTex closes the math
+  it is already in). The base — documentclass + TEX_BASE_PREAMBLE — is a CONST,
+  not a field: nothing to edit and no size knob to reach (size is `size=` /
+  `scale!`). `print(tpl)` / `tex_source(tpl)` show the document. LMathTex with
+  the default template IS Tex(f; via=:latex), to 1e-9.
+- Grids: MatrixMobject(entries; cell=Tex) with native stretchable brackets,
+  Table(entries; row_labels, col_labels, include_outer_lines); read them with
+  get_entries/get_rows/get_columns/get_cell/get_brackets/get_lines, or by the
+  key "(i,j)".
+  Typed shorthands, each one fixing what a cell is made of: TexMatrix(m;
+  tex_config) (= MatrixMobject, with one place to configure the Tex),
+  MathTable (formula cells), IntegerTable (rounded, no decimal point),
+  DecimalTable(m; num_decimal_places=1) (fixed-point, so every cell has the
+  same character count), MobjectTable (mobjects only, and it SAYS SO if a cell
+  is a number instead of quietly running it through TextMobject).
+- Colour: set_color_by_gradient!(m, BLUE, YELLOW) — along the points of a
+  shape, across the children of a group; color_gradient(colors, n),
+  colormap_colors(:viridis|:magma|:plasma|:inferno).
+- A LIST of colours (GL's set_fill(color=[…])): set_fill!/set_stroke!/
+  set_color!(m; color = [RED, BLUE]) paints a gradient along the points,
+  LINEAR in the stored floats (not the squares blend of interpolate_color),
+  and every member of a family gets the whole gradient over its own points;
+  opacity = [0, 1] interpolates the same way.
+- One colour at a time: interpolate_color(c1, c2, α) → Vec4f (manim's; all
+  four channels, opacity included) and interpolate_gradient(colors, α), which
+  is color_gradient asked one α at a time — α=0 the first colour, α=1 the
+  last, references spaced evenly, α clamped. `interpolate_gradient(:viridis,
+  0.7)` works. Use them when α comes from a ValueTracker or a normalised
+  quantity. The formula is ManimGL's — the three colour channels
+  interpolate as SQUARES, so the midpoint RED→BLUE is #BD9BA7 and not CE's
+  #AA9399. `by = :channels` on any of the three gives CE's straight mix.
+  Opacity stays LINEAR through both:
+  alpha is coverage, not light.
+- Palette: 94 exported names — ManimGL's 70 ∪ Manim CE's 89, at the engines'
+  own hex. Nine families of five, A (lightest) → E (darkest), bare name = C:
+  BLUE/TEAL/GREEN/YELLOW/GOLD/RED/MAROON/PURPLE/GREY, e.g. BLUE_A…BLUE_E and
+  BLUE === BLUE_C. Plus WHITE, BLACK, ORANGE, PINK/LIGHT_PINK,
+  DARK_BROWN/LIGHT_BROWN/GREY_BROWN, GREEN_SCREEN, DARK_BLUE, PURE_RED/
+  _GREEN/_BLUE/_CYAN/_MAGENTA/_YELLOW, LOGO_{WHITE,GREEN,BLUE,RED,BLACK},
+  DEFAULT_{VMOBJECT_STROKE,VMOBJECT_FILL,MOBJECT,LIGHT}_COLOR. Every grey
+  answers to both spellings (GREY_B === GRAY_B; also LIGHTER/LIGHT/DARK/
+  DARKER_GREY|GRAY). A colour is just a hex String, a Colorant
+  (colorant"tomato") or a Vec4f — there is no colour type.
+- Where GL and CE disagree Janim follows GL (it ports GL), on exactly three
+  names: YELLOW and YELLOW_C are "#FFFF00" (CE: "#F7D96F") and BLUE_E is
+  "#1C758A" (CE: "#236B8E", which is here as DARK_BLUE). CE's whole palette
+  at CE's values is Janim.ManimCE.YELLOW etc. — the escape hatch for a scene
+  that must match a CE render.
+- CE's six colour catalogues are submodules, NOT exports (2138 names):
+  Janim.X11, Janim.XKCD, Janim.SVGNAMES, Janim.AS2700, Janim.BS381,
+  Janim.DVIPSNAMES — Janim.XKCD.MUDDYGREEN, or `using Janim.DVIPSNAMES`.
+- Draw order: set_z_index!(m, z) on ANY mobject that draws (a Surface, an
+  image, a Group root too), bring_to_front!/bring_to_back! (on a group or on
+  the scene; on the scene they ARE GL's `add` and `remove`-then-prepend:
+  a child sent to the front or back leaves its group among the roots, the
+  siblings stay, what was not on stage is added, and a root is never listed
+  twice). Stable: equal z keeps insertion order; z sorts the DRAWING and
+  never `submobjects`, so Transform still pairs children by position.
+  add_to_back!(parent, mobs...) adds NEW children first (underneath); one that
+  is already a child stays where it is, as in GL — bring_to_back! moves it.
+  space_out_submobjects!(g, 1.5) pushes children apart without growing them.
+  Every constructor takes z_index =, as manimgl's Mobject.__init__ does.
+- Corners: set_joint_type!(m, :miter|:bevel|:auto|:no_joint), get_joint_type.
+  manimlib's four codes and its default (:auto), so leaving it alone keeps a
+  render byte-identical. There is NO :round — the join is a geometry shader
+  ported from manimlib, which has none; CE's LineJointType.ROUND is Cairo's,
+  and asking errors instead of substituting. It only shows on a sharp corner
+  with a thick stroke. SVG's stroke-linejoin is honoured when PRESENT (miter,
+  bevel); absent it leaves :auto, and round still warns.
+- Sound: add_sound(scene, "clap.wav"; time_offset, gain) — muxed into the mp4
+  at the end, so the video stays byte-deterministic. `time_offset` counts from
+  NOW (GL); `time = t` is the absolute instant. The extension is resolved, and
+  the mux keeps every simulated frame.
+- Compositor: Layer, Composition, use_composition!, Mask, crop, BoxBlur,
+  Bloom, Dof, and the editor effects: Glitch(; intensity, seed, rate,
+  rgb_shift, slices, block), CRT(; scanlines, scan_depth, mask, curvature,
+  vignette, roll) and VHS(; chroma_bleed, jitter, noise, head_switch).
+  Plus the cheap family: ColorAdjust(; brightness, contrast, saturation, hue),
+  Pixelate(size), Vignette(; amount, radius, feather), Grain(; amount, seed),
+  ChromaticAberration(amount), Sharpen(amount; sigma), Wave(; amplitude,
+  wavelength, angle, phase) and EdgeDetect(; amount, color).
+  EVERY dial's zero is an exact no-op (the pass is skipped), rate counts
+  FRAMES, geometric sizes are in scene units, CRT's `roll` animated from an
+  updater is a television losing sync, and Wave's `phase` animated is a
+  travelling wave.
+- A camera per layer: Layer(world; camera = zoom, window = display) —
+  zoom = CameraFrame() aimed with move_to!/set_frame_height!/reorient!,
+  display a mobject whose projected bbox places the picture (central crop to
+  its aspect; fix_in_frame! it for HUDs; give it a stroke in a layer above
+  for the border). A REAL second render — magnifier, PiP, minimap, split
+  screen, 3D multicam with per-view occlusion. The camera takes updaters
+  (add_updater!(zoom, f -> move_to!(f, get_center(t))) is the chase) and the
+  same world may sit in several layers: updaters still run once per frame.
+  Masks/mattes are the PARENT's space, applied after the window. There is no
+  ZoomedScene because a keyword does its job.
+- The frame as a mobject: scale!(frame, k; about_point, about_edge) is
+  manimgl's zoom verb (scale_frame! stays), move_to!(frame, mob) aims it at a
+  mobject, and the frame answers get_bounding_box_point — so
+  align_to!(logo, scene.frame, LEFT) and next_to!(hud, scene.frame, DOWN)
+  work. increment_theta!/increment_phi!/increment_gamma!(frame, d; units=DEG)
+  turn it BY an angle; get_theta reads the quaternion back, so it WRAPS into
+  (-π, π] in both engines — a running total is a ValueTracker's job.
+  wait_until!(scene, cond; max_time=60) holds the scene until cond() (also
+  wait!(scene, t; stop_condition)); the frame is emitted, THEN asked, and
+  under `--from` it is simulated rather than skipped, so the numbering
+  after the checkpoint stays the full render's.
+- THE FRAME'S UPDATERS RUN ONLY IF IT IS ON THE STAGE: `_update_all!` walks
+  `scene.mobjects`, so `add_updater!(scene.frame, …)` does nothing until
+  `add!(scene, scene.frame)` — in ManimGL that line is cosmetic, here it is
+  the whole chase; an ANIMATION of the frame (`animate(scene.frame, …)`)
+  works without it. And `scene.frame.camera` is the `Camera` behind the
+  frame, the receiver of the verbs that exist only on it
+  (`set_focal_distance!`, `set_euler_angles!`, `frame_width`/`frame_height`).
+  ComplexValueTracker(z) holds a complex; complex_to_R3/R3_to_complex convert.
+  FadeTransformPieces(a, b) cross-fades child against child instead of block
+  against block. ParametricSurface is Surface. IntegerMobject(n) is manimgl's
+  Integer (Base has that name); Angle(l1, l2; dot=true) draws CE's dot.
+- 3D: reorient!, fix_in_frame!, apply_depth_test!, set_shading!. Every
+  frame renders at FOUR samples — the 4× resolve is the fill's antialiasing —
+  so surface silhouettes get the ThreeDScene limb (~1.4 px) by default;
+  `samples = 0` and `4` are the same frame, and Scene(...; samples = 1) or
+  `janim render --samples 1` is the aliased picture (a hard 0.89 px limb).
+- Farm: render_parallel(construct, output; nprocs, fps, resolution).
+- janim.cfg: a file of CLI flags (one per line) beside the scene or
+  in the cwd — the bash client prepends and ANNOUNCES it; user flags win; on
+  a TTY, render/preview open a small panel over the merged values (ENTER
+  renders, Ctrl+S saves to the cfg, ESC quits; arrows or Ctrl+J/K/H/L
+  navigate). FOR AGENTS: pass --only-cli
+  to skip both the panel and the cfg (flags and defaults alone — the fully
+  predictable call); --no-tui skips just the panel; a pipe never sees it.
+  The ENGINE reads none of this — it is argv pre-filling in the client.
+- No verb = preview (manimgl-style): `janim scene.jl` opens the
+  window; `-w` writes the video (render), `-p` writes and opens it, `-s` is
+  the still. Explicit `preview` refuses -w/-p out loud. `--out_dir DIR`
+  drops the output in DIR (mkdir -p'd; relative -o joins under it, absolute
+  -o wins with a warning) — resolved in the CLI, the engine gets a plain -o.
+- `-s`/`--save-frame` on `janim render` writes ONE frame as a png instead of
+  a video, like Manim's `-s`: bare it is the LAST frame, `-s --to X` is frame
+  X (`--to` also takes `1.5s`), and it composes with `-t` (RGBA png) and the
+  quality presets. It is a spelling of `janim frame`, sharing its cache;
+  it refuses `-j`, `--from` and `-n` rather than ignoring them.
+- A scene with NO animations (no play!/wait!) is written as an IMAGE, like
+  Manim's: `Scene(construct; output="x.mp4")` and `janim render` both write
+  `x.png` instead of an empty video (RGBA under `-t`). The test is
+  `scene.frames == 0`, i.e. the clock never moved — an EMPTY SELECTION
+  (`-n`, `--from`/`--to`) is a different thing and still reports an error.
+- Motion blur: there is NO in-loop motion blur. `Scene(...; motion_blur = n)`
+  with n > 1 is an error, and so is `janim render --motion-blur`.
+  `render_frame_motion(construct, t; n = 8, shutter = 0.5, fps, resolution,
+  png)` makes a blurred STILL: it averages n sub-frames inside the shutter (a
+  fraction of the frame interval; 0.5 = 180°), centred on t, on the CPU and
+  in linear light. Each sub-frame is an ordinary render, so updater-driven
+  motion smears too.
+- The FRAMES are the promise; the mp4 CONTAINER is x264's. By default
+  (`encoder_threads = nothing`) x264 runs multithreaded, which is bit-stable on
+  one machine (10 of 10 renders of examples/scenes/04_space.jl at 1080p60 gave
+  the same mp4) but is not a promise across thread counts or machines.
+  `encoder_threads = 1` makes the FILE the promise — at 4.3× the render at
+  1080p60 (24 s → 104 s, measured), which is why it is not the default.
+- A SHAPE OF YOUR OWN: `const Gear = VMobject{:Gear}` and a
+  KEYWORD constructor that starts from `VMobject(:Gear; kw...)` — the public
+  base constructor, an empty mobject with the factory style whose tag
+  dispatches as its own type, so every verb, layout and animation already
+  works on it (`vmob(:Gear; kw...)` is an alias for the same call). An unknown
+  keyword is an ArgumentError naming the tag («Gear does not take `teeth`»).
+  Never write `(::Type{Gear})(args...; kw...)`
+  with a bare `args...`: it intercepts the positional field constructor the
+  base call ends in and recurses forever. And a top-level name of yours
+  SHADOWS Janim's silently (~720 exports: `get_cell`, `get_angle` and `vmob`
+  are easy to shadow by accident) — qualify `Janim.get_angle`, or ask
+  `isdefined(Janim, :name)` first. A mobject that is not a path subtypes
+  `Mobject` and implements the interpolation contract
+  (examples/tutorial/c2_01_updaters_and_custom_mobjects/03_custom_mobjects.jl).
+
+## Hard rules
+
+- Determinism: no unseeded randomness and no wall-clock time in scenes;
+  two renders of the same code produce byte-identical FRAMES (and the same
+  mp4 with `encoder_threads = 1`, see above). No driver knob is involved:
+  the WebGPU drivers compile at pipeline creation and have no
+  shader-variant race (`strict_gl()` exists with nothing behind it,
+  and `strict_gl_status()` says so).
+- One renderer: WebGPU. `backend()` reports `:wgpu`; `JANIM_BACKEND=gl` is an
+  error (`wgpu` is the only backend). A `Scene` renders strokes, dots,
+  surfaces, images and textured surfaces; fills as stencil-then-cover,
+  ManimGL's own: each VMobject counted into the stencil by the nonzero rule
+  and covered once per sample, one render pass a frame, the fill's own z,
+  the 4× resolve as its antialiasing, and a stroke on a face winning the
+  tie by a measured slope bias; and compositions with every effect and MSAA
+  (one render pass per quad, one command buffer per frame), to a file or
+  through `render_frame`. Previews use a GLFW window without an API, a
+  surface from its native handles on Wayland or X11, ManimGL's present pass
+  at 1:1, Fifo as the vsync and one GPU per process — `live`,
+  `Scene(preview = true)`, the daemon and `render_parallel`. `motion_blur > 1`
+  is an error (there is no in-loop motion blur; `render_frame_motion` works).
+  `JANIM_HEADLESS=1` means the CPU adapter AND GLFW's Null platform (a
+  preview draws but presents nothing), `gpu_info()` is the driver identity,
+  and wgpu's errors arrive as `GPUValidationError` / `GPUDeviceLostError`.
+- become! IS recursive over the children: a become!(Tex, …) on
+  the parent alone would leave the glyphs untouched and FadeIn would not
+  fade. When the structures differ it REPLACES the
+  children with copies of the other's: external references to the old child
+  are left orphaned.
+- pointwise_become_partial! is NOT recursive: on a Tex (a parent with no
+  points) it does nothing. Creation animations walk the family themselves.
+- A Tex is a parent plus one child per glyph on purpose:
+  with every glyph in a single VMobject, a morph's intermediate blobs cancel
+  their neighbours' winding.
+- To animate your own type: the interpolation contract (is_interpolable,
+  Base.copy, interpolate!(dst,a,b,α), become!) — Transform works with any
+  Mobject that fulfils it, not just with VMobject.
+- To write your own animation: a struct with `base::AnimBase` and ONE
+  method `interpolate_submobject(anim, sub, from, α)` — the generic begin!
+  photographs the family and interpolate! spreads `sub_alpha` (GL's
+  get_sub_alpha) over it; `clean_up!(anim, stage)` if it must add/remove;
+  `turn_animation_into_updater(anim; cycle)` runs it as an updater.
+- Updater + SciML integrator: keep the integrator outside and put `dt > 0 &&`
+  before step! (registration calls with dt=0).
+- Freeze updaters (Ref{Bool}) before a FadeOut of the mobject. The FadeOut
+  hands it back intact: a later ShowCreation/FadeIn shows the real thing.
+
+## Corpus
+
+- examples/tutorial/ — 89 RUNNABLE lessons in four courses: foundations,
+  advanced (custom mobjects/animations, camera, simulations, coming from Manim,
+  writing a layer effect), the Janim-only compositor course (layers,
+  blur/glow, masks, glitch, the motion-blur still) and the shape zoo (every
+  flat shape and the group base). Each lesson is a `construct` with the explanation in the
+  header comment. Best few-shot corpus in the repo, and
+  `examples/tutorial/course2.md` has the Manim→Janim translation table.
+- examples/gallery/*.jl — 6 minimal classic scenes (few-shot).
+- examples/scenes/*.jl — 12 complete scenes (masks, Tex morphing, the full 2D
+  stack, the full 3D stack, design A/B pairs, particles, multi-camera and
+  chase-camera views). Their on-screen prose is Spanish on purpose: it is the
+  content being taught, not code.
+- examples/demo/*.jl — 12 short demos of what the compositor, the cameras and
+  the particle clouds do.
+- docs/src/ — the manual (Documenter; `docs/make.jl` builds it).
+
+## Writing a new layer effect
+
+A layer effect is a mutable struct + a WGSL fragment registered once with
+`effect_shader!(:entry, "…fn fs_entry(in: QuadOut) -> @location(0) vec4<f32> {…}")`
++ one method `_apply_effect!(cg::GPUCompositor, rv, ef::T, src::Int)` that
+writes `_scratch(cg, src)` through `_quad!(cg, rv, :entry, dst; a = src,
+params = QuadParams(f0 = …, i0 = …))` and returns the slot it wrote;
+`RadialBlur` in `src/backend/wgpu/compositor.jl` is the smallest complete
+example. If it needs randomness or a per-frame pattern it must NOT call
+rand() (determinism): declare a field `current_frame::Int` (that field alone is what
+makes `_tick!` fill it in), call `janim_noise_px(in.position.xy, frame,
+seed)` in the fragment (the noise insert is spliced in), and pass
+`Int32(ef.current_frame)` and `_noise_seed(ef, ef.seed)` in `P.i0` — the
+seed is mixed with the effect's type name so two effects with the same user
+seed do not draw the same pattern.
