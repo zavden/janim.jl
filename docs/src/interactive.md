@@ -20,8 +20,10 @@ from the top on every frame.
 
 The window is opened by GLFW without a graphics API and WebGPU presents on
 it through a surface made from the window's native handles — Wayland on a
-Wayland session, X11 with `JULIA_GLFW_PLATFORM=x11` — with one render pass
-that samples the frame nearest at 1:1 and `Fifo` as the vsync. A hidden session
+Wayland session, X11 with `JULIA_GLFW_PLATFORM=x11`, a `CAMetalLayer` on the
+window's content view on macOS — with one render pass that samples the
+frame nearest at 1:1 (2:1 on a Retina screen, each pixel a 2×2 block) and
+`Fifo` as the vsync. A hidden session
 (`setup_live(visible = false)`) or `JANIM_HEADLESS=1` draws into the frame's
 target and presents nothing.
 

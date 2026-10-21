@@ -96,7 +96,8 @@ There is no in-loop motion blur: `motion_blur > 1` is refused by name, and
 
 A `Scene` renders to an mp4 (or a transparent mov) or through `render_frame`,
 and previews too: the window is opened by GLFW WITHOUT a graphics API, a
-WebGPU surface is made from its native handles (Wayland or X11), and one
+WebGPU surface is made from its native handles (Wayland or X11; on macOS a
+`CAMetalLayer` on the window's content view), and one
 render pass puts the frame on it — a triangle over the screen sampling the
 target nearest, so at 1:1 the window receives the frame's own bytes (the
 swapchain read back is byte-identical). `Fifo` is the vsync. A surface exists

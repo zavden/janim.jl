@@ -10,6 +10,60 @@ comparten los shaders WGSL y la versión mayor de wgpu-native (v24), así que lo
 que aprendas en una sirve para la otra. Si tienes los dos clones, lee también
 ese fichero.
 
+## Resultado · 2026-10-21, macOS 26.6.2, Apple M1, Julia 1.12.6 (juliaup)
+
+Probado en el Mac, sección por sección. Lo previsto se cumplió casi entero;
+lo que resultó distinto está marcado.
+
+- **§1 · Preparar.** Confirmado. `brew install --cask font-dejavu` deja las
+  DejaVu en `~/Library/Fonts`; `Pkg.instantiate()` descarga el artefacto de
+  wgpu-native para `aarch64-apple-darwin` y el resto, y la precompilación
+  de Janim tarda unos 30 s. LaTeX y `dvisvgm` de MacTeX en
+  `/Library/TeX/texbin` llegan al daemon por el `PATH` sin más.
+- **§2 · Render a fichero.** Funciona sin tocar código. El adaptador es
+  «Apple M1 · integrated · metal», con `vendor` y `description` vacíos (slug
+  `apple`, versión `unknown`, y la cabecera `# driver:` lo dice así).
+  `JANIM_HEADLESS=1` da el error con la lista de adaptadores, como se
+  esperaba. Ni pánicos ni valores absurdos: el ABI de los bindings cuadra
+  en arm64, callbacks con `WGPUStringView` por valor incluidos. Vistos a
+  ojo y correctos: `c1_01/01`, `c1_03/04_latex`, `c2_03/03_camera_3d`,
+  `demo/03_portals`.
+- **§3 · Metal.** Nada se vio MAL en lo probado, y el §6 lo confirma de otra
+  manera: píxel a píxel igual que Python en las cinco demos.
+- **§4 · Daemon y CLI.** Confirmado: `daemon start` (2,4 s en caliente con
+  `nohup`), `render`, `frame`, `ping`, `status`, `check` (informa «yours»
+  con `lsof`), `preview` y `stop`. No probado: un daemon huérfano.
+- **§5 · La ventana en vivo.** Escrita y probada. `bindings.jl` gana la
+  `struct WGPUSurfaceSourceMetalLayer`; `window.jl` gana `_cocoa_metal_layer!`
+  y `_cocoa_sync_scale!`, con el runtime de Objective-C por `ccall`
+  (`/usr/lib/libobjc.A.dylib`) y `create_window` acepta `:cocoa`. Hubo que
+  hacer `dlopen` de QuartzCore (GLFW enlaza Cocoa y AppKit, no QuartzCore).
+  La superficie prefiere `BGRA8UnormSrgb` (se usa `BGRA8Unorm`), ofrece
+  Fifo y CopySrc. **Retina:** wgpu-native pone `drawableSize` al tamaño del
+  framebuffer (2560×1440 sobre 1280×720 puntos), y `contentsScale =
+  backingScaleFactor` (2.0) se pone al crear y al reconfigurar, como hace
+  GLFW con sus surfaces de Vulkan; en Janim.py, con la misma capa, se midió
+  que cada píxel del frame ocupa exactamente un bloque 2×2 del swapchain.
+  Dos sesiones de 3 s seguidas (~27 fps) abren y cierran limpias; el
+  drenaje de foco de Wayland no estorba (sin agotar el tope); el playhead
+  con `@async` va bien en el hilo 1. Desde el daemon, dos previews seguidas
+  en el mismo daemon: la ventana se abre desde el proceso con `nohup`,
+  reproduce los 420 frames y cierra con Esc («OK preview closed»). **No
+  probado a mano:** teclas y ratón más allá de Esc, y el cierre por Ctrl-C
+  en el cliente (este proceso no pudo enviar pulsaciones ni capturar la
+  pantalla por permisos de macOS).
+- **§6 · Julia contra Python.** Hecho. Cuatro demos idénticas byte a byte a
+  la primera; `11_chase_camera` difería en los 220 frames y la causa estaba
+  en Python: fusiona mallas consecutivas en un solo `draw_indexed` y en
+  Metal la interpolación del color iluminado depende de la llamada que lleva
+  el triángulo. Arreglado en Janim.py (una llamada por malla en Metal, como
+  aquí); Janim.jl no necesitó cambios. Con eso, las cinco demos coinciden
+  (140, 140, 180, 141 y 220 frames). Los detalles están en el `MACOS.md` de
+  Janim.py, §7.
+- **Lo que resultó falso:** el pánico, el ABI y las tres causas sugeridas
+  para una discrepancia (fuentes, libm, numpy) no fueron el problema.
+- **Lo que no cambió:** `glfw.jl`, `context.jl`, `live.jl`, `bin/janim`.
+
 ## 0 · Reglas de trabajo
 
 - **El objetivo** es que en un M1 funcionen: el render a fichero, la CLI

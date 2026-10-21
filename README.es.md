@@ -10,8 +10,8 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
   ejecución: el reloj es fijo y nada lee la hora del sistema. Eso es lo que
   hace exactas las previsualizaciones, la caché de frames y el render por
   segmentos en paralelo.
-- **WebGPU.** El render pasa por wgpu-native sobre Vulkan, en la GPU o en la
-  CPU (lavapipe), sin ventana y sin pantalla.
+- **WebGPU.** El render pasa por wgpu-native, sobre Vulkan (Linux: la GPU o
+  la CPU con lavapipe) o sobre Metal (macOS), sin ventana y sin pantalla.
 - **Un compositor por capas** que Manim no tiene: modos de fusión, máscaras de
   verdad con difuminado, desenfoque, bloom, profundidad de campo, efectos de
   editor y una cámara por capa (lupas, imagen dentro de imagen, varias vistas
@@ -32,12 +32,15 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
 
 ## Requisitos
 
-- **Linux** con un driver de Vulkan (Mesa RADV, lavapipe u otro). macOS y
-  Windows todavía no están soportados.
+- **Linux** con un driver de Vulkan (Mesa RADV, lavapipe u otro), o **macOS
+  en Apple Silicon**, donde Janim dibuja con Metal (probado en macOS 26.6,
+  Apple M1). Windows todavía no está soportado.
 - **Julia 1.11 o posterior** (desarrollado con la 1.12).
-- Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans.
+- Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans (en macOS,
+  `brew install --cask font-dejavu`).
 - Opcional: **`latex` y `dvisvgm`** en el `PATH`, solo para
-  `Tex(…; via = :latex)`.
+  `Tex(…; via = :latex)` (en macOS, MacTeX o BasicTeX, en
+  `/Library/TeX/texbin`).
 
 `ffmpeg`, Typst, FreeType y la biblioteca de WebGPU vienen con las
 dependencias de Julia.
@@ -111,7 +114,8 @@ La opción de calidad fija a la vez la resolución y los fps:
 | `-qk` | 3840×2160 | 60 |
 
 Por defecto se renderiza en la GPU. Con `JANIM_HEADLESS=1` (para el daemon o
-para una ejecución de `julia`) se renderiza en la CPU con lavapipe.
+para una ejecución de `julia`) se renderiza en la CPU con lavapipe (solo en
+Linux: macOS no tiene adaptador de CPU).
 
 ## Ejemplos
 
@@ -140,7 +144,9 @@ muchos ejemplos está en español.
 
 ## Limitaciones conocidas
 
-- **Solo Linux** por ahora.
+- **Solo Linux y macOS (Apple Silicon).** Windows no está soportado. Los
+  frames son reproducibles dentro de cada ruta (RADV, lavapipe o Metal), y
+  Metal puede diferir de Linux en un píxel en algunos bordes.
 - **No hay desenfoque de movimiento en el vídeo.** `Scene` rechaza
   `motion_blur > 1`, y por tanto también la opción `--motion-blur` de la CLI.
   Lo que existe es `render_frame_motion`, que promedia varias exposiciones en
