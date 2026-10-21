@@ -9,7 +9,9 @@
 #     keys, title and close button — the `GLFW.` calls of live.jl do not
 #     care — and WebGPU presents on it through a surface built from
 #     `glfwGetWaylandDisplay/Window` or `glfwGetX11Display/Window`, raw
-#     ccalls into GLFW_jll.
+#     ccalls into GLFW_jll — or, on macOS, from a `CAMetalLayer` put on the
+#     `NSWindow`'s content view (`glfwGetCocoaWindow`, the Objective-C
+#     runtime by ccall; the macOS section below).
 #   · The format is the PLAIN form of what the surface prefers: both
 #     platforms prefer `BGRA8UnormSrgb`; `rv.target` already holds
 #     sRGB-encoded bytes (FINAL does the OETF), and an `-srgb` surface would
@@ -60,7 +62,7 @@ mutable struct GPUPresenter
     gpu::GPU
     handle::Ptr{Cvoid}                # the GLFW window's handle: the registry's key
     surface::WGPUSurface
-    platform::Symbol                  # :wayland | :x11 — which source made the surface
+    platform::Symbol                  # :wayland | :x11 | :cocoa — which source made the surface
     format::WGPUTextureFormat         # the plain form of the surface's preferred format
     width::Int                        # configured size, in physical pixels
     height::Int
@@ -92,7 +94,7 @@ const _PRESENT_FS = "fs_main"
 
 The preview window: a GLFW window opened WITHOUT a graphics API (the GLFW
 package is loaded first, as for every window), and — when it is visible and
-the platform is X11 or Wayland — a presenter on it: the WebGPU surface
+the platform is X11, Wayland or Cocoa — a presenter on it: the WebGPU surface
 made from the window's native handles, configured on the process's GPU.
 Hidden, or under the Null platform, the window has no presenter and
 `present!` only pumps events. Closed by `close_context`, which releases
@@ -103,7 +105,7 @@ function create_window(width::Int, height::Int; title = "Janim", visible = true)
     window = Base.invokelatest(_create_window_noapi, width, height; title, visible)
     plat = gl_platform()
     if visible && !_NULL_PLATFORM[]
-        if plat === :wayland || plat === :x11
+        if plat === :wayland || plat === :x11 || plat === :cocoa
             try
                 _attach_presenter!(_shared_gpu(), window, plat)
             catch
@@ -112,7 +114,7 @@ function create_window(width::Int, height::Int; title = "Janim", visible = true)
             end
         else
             close_context(window)
-            error("the preview surface on the $plat platform is not supported (X11 and Wayland are): " *
+            error("the preview surface on the $plat platform is not supported (X11, Wayland and Cocoa are): " *
                   "render to a file instead")
         end
     end
@@ -141,6 +143,12 @@ function _create_surface(inst::WGPUInstance, handle::Ptr{Cvoid}, plat::Symbol)
             throw(GPUValidationError("GLFW gave no X11 display/window for the window"))
         src = Ref(WGPUSurfaceSourceXlibWindow(
             WGPUChainedStruct(C_NULL, WGPUSType_SurfaceSourceXlibWindow), display, UInt64(xid)))
+        desc = Ref(WGPUSurfaceDescriptor(Ptr{WGPUChainedStruct}(pointer_from_objref(src)), _EMPTY_SV))
+        surface = GC.@preserve src desc wgpuInstanceCreateSurface(inst, desc)
+    elseif plat === :cocoa
+        layer = _cocoa_metal_layer!(handle)
+        src = Ref(WGPUSurfaceSourceMetalLayer(
+            WGPUChainedStruct(C_NULL, WGPUSType_SurfaceSourceMetalLayer), layer))
         desc = Ref(WGPUSurfaceDescriptor(Ptr{WGPUChainedStruct}(pointer_from_objref(src)), _EMPTY_SV))
         surface = GC.@preserve src desc wgpuInstanceCreateSurface(inst, desc)
     else
@@ -297,6 +305,80 @@ function _release_presenter!(p::GPUPresenter)
     return nothing
 end
 
+# ── macOS: the CAMetalLayer on the NSWindow's content view ──────────────
+#
+# wgpu-native presents on Metal through a `CAMetalLayer`
+# (`WGPUSurfaceSourceMetalLayer`). GLFW gives the `NSWindow`
+# (`glfwGetCocoaWindow`) and the layer goes on its `contentView` — the
+# recipe of wgpu-native's triangle example and of GLFW's own Vulkan surface:
+# `[view setLayer:[[CAMetalLayer alloc] init]]`, `[view setWantsLayer:YES]`,
+# and `setContentsScale:` to the window's `backingScaleFactor`, or on a
+# Retina screen the layer would be shown at half its resolution (wgpu-native
+# sets `drawableSize` itself at every configure; the scale is ours to set).
+# The Objective-C runtime is reached by ccall — `objc_getClass`,
+# `sel_registerName`, `objc_msgSend` with each message's own signature; on
+# arm64 there are no `_fpret`/`_stret` variants — and QuartzCore is
+# dlopened first, or the CAMetalLayer class does not exist in the process
+# (GLFW links Cocoa and AppKit, not QuartzCore). All of it runs on thread 1,
+# where Cocoa wants its windows.
+
+const _OBJC = "/usr/lib/libobjc.A.dylib"
+const _QUARTZCORE = "/System/Library/Frameworks/QuartzCore.framework/QuartzCore"
+
+_objc_class(name::String) = ccall((:objc_getClass, _OBJC), Ptr{Cvoid}, (Cstring,), name)
+_objc_sel(name::String) = ccall((:sel_registerName, _OBJC), Ptr{Cvoid}, (Cstring,), name)
+_objc_send(obj::Ptr{Cvoid}, sel::String) =
+    ccall((:objc_msgSend, _OBJC), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Cvoid}), obj, _objc_sel(sel))
+_objc_send(obj::Ptr{Cvoid}, sel::String, arg::Ptr{Cvoid}) =
+    ccall((:objc_msgSend, _OBJC), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), obj, _objc_sel(sel), arg)
+_objc_send(obj::Ptr{Cvoid}, sel::String, arg::Bool) =
+    ccall((:objc_msgSend, _OBJC), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}, Bool), obj, _objc_sel(sel), arg)
+_objc_send(obj::Ptr{Cvoid}, sel::String, arg::Float64) =
+    ccall((:objc_msgSend, _OBJC), Cvoid, (Ptr{Cvoid}, Ptr{Cvoid}, Cdouble), obj, _objc_sel(sel), arg)
+_objc_send_double(obj::Ptr{Cvoid}, sel::String) =
+    ccall((:objc_msgSend, _OBJC), Cdouble, (Ptr{Cvoid}, Ptr{Cvoid}), obj, _objc_sel(sel))
+_objc_is_kind(obj::Ptr{Cvoid}, class::Ptr{Cvoid}) =
+    ccall((:objc_msgSend, _OBJC), Bool, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}), obj, _objc_sel("isKindOfClass:"), class)
+
+"The NSWindow behind a GLFW window (Cocoa), never NULL."
+function _cocoa_window(handle::Ptr{Cvoid})
+    ns_window = ccall((:glfwGetCocoaWindow, GLFW_jll.libglfw), Ptr{Cvoid}, (Ptr{Cvoid},), handle)
+    ns_window == C_NULL && throw(GPUValidationError("GLFW gave no NSWindow for the window"))
+    return ns_window
+end
+
+"""
+The `CAMetalLayer` of the window's content view, made and installed the
+first time (idempotent: a view that already carries one keeps it), with
+`contentsScale` at the window's backing scale.
+"""
+function _cocoa_metal_layer!(handle::Ptr{Cvoid})
+    Base.Libc.Libdl.dlopen(_QUARTZCORE)
+    ns_window = _cocoa_window(handle)
+    view = _objc_send(ns_window, "contentView")
+    view == C_NULL && throw(GPUValidationError("the NSWindow has no content view"))
+    metal_class = _objc_class("CAMetalLayer")
+    metal_class == C_NULL && throw(GPUValidationError("the CAMetalLayer class is not available (QuartzCore)"))
+    layer = _objc_send(view, "layer")
+    if layer == C_NULL || !_objc_is_kind(layer, metal_class)
+        layer = _objc_send(_objc_send(metal_class, "alloc"), "init")
+        layer == C_NULL && throw(GPUValidationError("[[CAMetalLayer alloc] init] returned nil"))
+        _objc_send(view, "setLayer:", layer)       # the view retains it; our +1 lives as long as the window
+        _objc_send(view, "setWantsLayer:", true)
+    end
+    _objc_send(layer, "setContentsScale:", _objc_send_double(ns_window, "backingScaleFactor"))
+    return layer
+end
+
+"Keep the layer's `contentsScale` at the window's backing scale (a reconfigure may follow a screen change)."
+function _cocoa_sync_scale!(handle::Ptr{Cvoid})
+    ns_window = _cocoa_window(handle)
+    layer = _objc_send(_objc_send(ns_window, "contentView"), "layer")
+    layer == C_NULL && return false
+    _objc_send(layer, "setContentsScale:", _objc_send_double(ns_window, "backingScaleFactor"))
+    return true
+end
+
 # ── the presentation ────────────────────────────────────────────────────
 
 "One acquire: the status and the surface's texture (NULL unless success)."
@@ -380,6 +462,7 @@ end
 function _reconfigure!(p::GPUPresenter)
     w, h = _framebuffer_size(p.handle)
     (w > 0 && h > 0) || return false
+    p.platform === :cocoa && _cocoa_sync_scale!(p.handle)   # the window may have changed screen
     _configure!(p, w, h)
     p.reconfigures += 1
     _SURFACE_RECONFIGS[] += 1

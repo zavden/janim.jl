@@ -946,6 +946,11 @@ struct WGPUSurfaceSourceXlibWindow
     window::UInt64
 end
 
+struct WGPUSurfaceSourceMetalLayer
+    chain::WGPUChainedStruct
+    layer::Ptr{Cvoid}
+end
+
 struct WGPUSurfaceTexture
     nextInChain::Ptr{WGPUChainedStructOut}
     texture::WGPUTexture
