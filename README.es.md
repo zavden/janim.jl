@@ -126,6 +126,32 @@ como abajo; las rutas pueden llevar espacios y escribirse `C:\…`, `C:/…` o
 renderiza y `julia --project=. -e 'using Janim; live(\"escena.jl\")'` abre
 la ventana en vivo (PowerShell quiere las comillas interiores escapadas así).
 
+Clona como siempre: `.gitattributes` deja `bin/janim` con LF diga lo que diga
+`core.autocrlf`, y Git Bash lo ejecuta tal cual. Git Bash está en el menú
+Inicio en cuanto Git se instala; si quieres, úsalo dentro de Windows Terminal
+(la barra de progreso y el panel son ANSI). El daemon sobrevive a cerrar la
+ventana de Git Bash que lo arrancó.
+
+### Comprobar
+
+Desde el clon, en cualquier plataforma (Git Bash en Windows):
+
+```bash
+julia --project=. -e 'using Janim; println(gpu_info())'
+julia --project=. examples/tutorial/c1_01_basics/01_how_janim_works.jl   # → examples/tutorial/output/c1_01_basics/01_how_janim_works.mp4
+bin/janim daemon start
+bin/janim render examples/demo/03_portals.jl -ql -o portales.mp4
+bin/janim daemon stop
+```
+
+La primera línea dice la GPU y el backend (`vulkan`, `metal` o `dx12`; con
+`JANIM_HEADLESS=1`, lavapipe o WARP, `kind = :cpu`). La segunda es un render
+entero desde `julia`, ffmpeg incluido, en frío: paga la carga de Julia,
+varios segundos. Las tres últimas son la línea de órdenes: el daemon arranca
+en unos segundos y desde ahí cada render va en caliente. Si Julia muere sin
+stacktrace (un pánico dentro de la biblioteca de WebGPU), repítelo con
+`JANIM_WGPU_LOG=info` para ver la última llamada.
+
 ## Una escena mínima
 
 ```julia
