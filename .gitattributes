@@ -1,0 +1,3 @@
+# The CLI is bash and must stay LF even when Git converts line endings (the
+# default of Git for Windows).
+bin/janim text eol=lf
