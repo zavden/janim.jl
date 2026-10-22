@@ -11,7 +11,8 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
   hace exactas las previsualizaciones, la caché de frames y el render por
   segmentos en paralelo.
 - **WebGPU.** El render pasa por wgpu-native, sobre Vulkan (Linux: la GPU o
-  la CPU con lavapipe) o sobre Metal (macOS), sin ventana y sin pantalla.
+  la CPU con lavapipe), Metal (macOS) o DX12 (Windows: la GPU o la CPU con
+  WARP), sin ventana y sin pantalla.
 - **Un compositor por capas** que Manim no tiene: modos de fusión, máscaras de
   verdad con difuminado, desenfoque, bloom, profundidad de campo, efectos de
   editor y una cámara por capa (lupas, imagen dentro de imagen, varias vistas
@@ -32,15 +33,16 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
 
 ## Requisitos
 
-- **Linux** con un driver de Vulkan (Mesa RADV, lavapipe u otro), o **macOS
-  en Apple Silicon**, donde Janim dibuja con Metal (probado en macOS 26.6,
-  Apple M1). Windows todavía no está soportado.
+- **Linux** con un driver de Vulkan (Mesa RADV, lavapipe u otro), **macOS en
+  Apple Silicon**, donde Janim dibuja con Metal (probado en macOS 26.6, Apple
+  M1), o **Windows 11**, donde dibuja con DX12 (probado en Windows 11 25H2,
+  AMD Radeon RX 9070 XT). En Windows funciona el render a fichero desde
+  `julia`; la línea de órdenes y la ventana en vivo están por escribir (ver
+  [`WINDOWS.md`](WINDOWS.md)).
 - **Julia 1.11 o posterior** (desarrollado con la 1.12).
-- Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans (en macOS,
-  `brew install --cask font-dejavu`).
+- Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans.
 - Opcional: **`latex` y `dvisvgm`** en el `PATH`, solo para
-  `Tex(…; via = :latex)` (en macOS, MacTeX o BasicTeX, en
-  `/Library/TeX/texbin`).
+  `Tex(…; via = :latex)`.
 
 `ffmpeg`, Typst, FreeType y la biblioteca de WebGPU vienen con las
 dependencias de Julia.
@@ -54,8 +56,69 @@ julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
 `Pkg.instantiate()` instala las versiones exactas que registra
-`Manifest.toml`. Janim todavía no está en el registro General; para usarlo
-desde otro entorno, `] dev ruta/a/Janim.jl`.
+`Manifest.toml`, binarios incluidos. Janim todavía no está en el registro
+General; para usarlo desde otro entorno, `] dev ruta/a/Janim.jl`. Antes, cada
+plataforma necesita sus paquetes.
+
+### Linux
+
+Julia con [juliaup](https://github.com/JuliaLang/juliaup)
+(`curl -fsSL https://install.julialang.org | sh`) o de la distribución; los
+drivers Vulkan de Mesa y las fuentes DejaVu; y, para `via = :latex`, LaTeX
+con la clase `standalone` y `dvisvgm`:
+
+```bash
+# Fedora
+sudo dnf install mesa-vulkan-drivers dejavu-sans-fonts \
+  texlive-latex texlive-standalone texlive-preview texlive-amsmath texlive-amsfonts texlive-xcolor texlive-dvisvgm
+# Debian, Ubuntu
+sudo apt install mesa-vulkan-drivers fonts-dejavu texlive-latex-extra dvisvgm
+```
+
+### macOS
+
+```bash
+curl -fsSL https://install.julialang.org | sh      # juliaup
+brew install --cask font-dejavu                     # la fuente de los ejemplos, en ~/Library/Fonts
+```
+
+`via = :latex` necesita MacTeX o BasicTeX más `dvisvgm`
+(`sudo tlmgr install dvisvgm` si falta); los dos quedan en
+`/Library/TeX/texbin`, que debe estar en el `PATH`.
+
+### Windows
+
+En PowerShell. Julia viene con juliaup desde winget; MiKTeX, que trae
+`dvisvgm`, es opcional. Git for Windows solo hace falta para clonar: hazlo con
+`git clone -c core.autocrlf=input …`, o `bin/janim` sale con CRLF.
+
+```powershell
+winget install -e --id Julialang.Juliaup
+winget install -e --id MiKTeX.MiKTeX      # opcional: Tex(…; via = :latex)
+```
+
+Abre un terminal nuevo para que cargue el `PATH`, haz `juliaup add 1.12` y
+`juliaup default 1.12` (el `Manifest.toml` se hizo con la 1.12) y ejecuta el
+`Pkg.instantiate()` de arriba. Queda un paso más: la biblioteca de WebGPU
+viene en un artefacto cuyo tarball de Windows no trae el bit de ejecución, y
+`Tar` de Julia lo convierte en un fichero que Windows se niega a cargar
+(`could not load library … Acceso denegado`). Concede el permiso una vez por
+depot:
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\.julia\artifacts" -Recurse -Filter wgpu_native.dll |
+  ForEach-Object { icacls $_.FullName /grant "*S-1-1-0:(RX)" }
+```
+
+Fuentes: descarga [DejaVu](https://github.com/dejavu-fonts/dejavu-fonts/releases),
+selecciona los `.ttf`, clic derecho, *Instalar*. Van a
+`%LOCALAPPDATA%\Microsoft\Windows\Fonts`, donde Janim las encuentra. Si
+instalaste MiKTeX, abre MiKTeX Console y pon la instalación de paquetes que
+falten en *Always* (o ejecuta
+`initexmf --set-config-value=[MPM]AutoInstall=1`).
+
+`bin/janim` es bash y su daemon todavía no corre en Windows; renderiza con
+`julia --project=. escena.jl`, como abajo.
 
 ## Una escena mínima
 
@@ -114,8 +177,8 @@ La opción de calidad fija a la vez la resolución y los fps:
 | `-qk` | 3840×2160 | 60 |
 
 Por defecto se renderiza en la GPU. Con `JANIM_HEADLESS=1` (para el daemon o
-para una ejecución de `julia`) se renderiza en la CPU con lavapipe (solo en
-Linux: macOS no tiene adaptador de CPU).
+para una ejecución de `julia`) se renderiza en la CPU: lavapipe en Linux, WARP
+en Windows (macOS no tiene adaptador de CPU).
 
 ## Ejemplos
 
@@ -144,9 +207,10 @@ muchos ejemplos está en español.
 
 ## Limitaciones conocidas
 
-- **Solo Linux y macOS (Apple Silicon).** Windows no está soportado. Los
-  frames son reproducibles dentro de cada ruta (RADV, lavapipe o Metal), y
-  Metal puede diferir de Linux en un píxel en algunos bordes.
+- **Windows es un port parcial.** El render a fichero funciona (DX12); la CLI
+  con su daemon y la ventana en vivo todavía no. Los frames son reproducibles
+  dentro de cada ruta (RADV, lavapipe, Metal, DX12 o WARP), y las rutas
+  pueden diferir entre sí en un píxel en algunos bordes.
 - **No hay desenfoque de movimiento en el vídeo.** `Scene` rechaza
   `motion_blur > 1`, y por tanto también la opción `--motion-blur` de la CLI.
   Lo que existe es `render_frame_motion`, que promedia varias exposiciones en

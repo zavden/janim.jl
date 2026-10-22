@@ -10,8 +10,8 @@ narrated vocabulary — `Circle`, `Transform`, `play!`, `next_to!`,
   run: the clock is fixed and nothing reads the wall clock. That is what
   makes previews, frame caches and parallel segment renders exact.
 - **WebGPU.** Rendering goes through wgpu-native, on Vulkan (Linux: the GPU or
-  the CPU with lavapipe) or on Metal (macOS), with no window and no display
-  needed.
+  the CPU with lavapipe), Metal (macOS) or DX12 (Windows: the GPU or the CPU
+  with WARP), with no window and no display needed.
 - **A layer compositor** that Manim lacks: blend modes, real masks with
   feather, blur, bloom, depth of field, editor effects, and a camera per
   layer (magnifiers, picture-in-picture, several 3D views of one world).
@@ -30,15 +30,16 @@ narrated vocabulary — `Circle`, `Transform`, `play!`, `next_to!`,
 
 ## Requirements
 
-- **Linux** with a Vulkan driver (Mesa RADV, lavapipe or another), or **macOS
-  on Apple Silicon**, where Janim draws with Metal (tested on macOS 26.6,
-  Apple M1). Windows is not supported yet.
+- **Linux** with a Vulkan driver (Mesa RADV, lavapipe or another), **macOS on
+  Apple Silicon**, where Janim draws with Metal (tested on macOS 26.6, Apple
+  M1), or **Windows 11**, where it draws with DX12 (tested on Windows 11
+  25H2, AMD Radeon RX 9070 XT). On Windows, rendering to a file from `julia`
+  works; the command line and the live window are still being written (see
+  [`WINDOWS.md`](WINDOWS.md)).
 - **Julia 1.11 or newer** (developed on 1.12).
-- The fonts your scenes ask for. The examples use DejaVu Sans (on macOS,
-  `brew install --cask font-dejavu`).
+- The fonts your scenes ask for. The examples use DejaVu Sans.
 - Optional: **`latex` and `dvisvgm`** on the `PATH`, only for
-  `Tex(…; via = :latex)` (on macOS, MacTeX or BasicTeX, in
-  `/Library/TeX/texbin`).
+  `Tex(…; via = :latex)`.
 
 `ffmpeg`, Typst, FreeType and the WebGPU library come with the Julia
 dependencies.
@@ -51,9 +52,69 @@ cd Janim.jl
 julia --project=. -e 'using Pkg; Pkg.instantiate()'
 ```
 
-`Pkg.instantiate()` installs the exact versions recorded in `Manifest.toml`.
-Janim is not in the General registry yet; to use it from another
-environment, `] dev path/to/Janim.jl`.
+`Pkg.instantiate()` installs the exact versions recorded in `Manifest.toml`,
+binaries included. Janim is not in the General registry yet; to use it from
+another environment, `] dev path/to/Janim.jl`. Before that, each platform
+needs its own packages.
+
+### Linux
+
+Julia from [juliaup](https://github.com/JuliaLang/juliaup)
+(`curl -fsSL https://install.julialang.org | sh`) or from the distribution;
+Mesa's Vulkan drivers and the DejaVu fonts; and, for `via = :latex`, LaTeX
+with the `standalone` class and `dvisvgm`:
+
+```bash
+# Fedora
+sudo dnf install mesa-vulkan-drivers dejavu-sans-fonts \
+  texlive-latex texlive-standalone texlive-preview texlive-amsmath texlive-amsfonts texlive-xcolor texlive-dvisvgm
+# Debian, Ubuntu
+sudo apt install mesa-vulkan-drivers fonts-dejavu texlive-latex-extra dvisvgm
+```
+
+### macOS
+
+```bash
+curl -fsSL https://install.julialang.org | sh      # juliaup
+brew install --cask font-dejavu                     # the examples' font, into ~/Library/Fonts
+```
+
+`via = :latex` needs MacTeX or BasicTeX plus `dvisvgm`
+(`sudo tlmgr install dvisvgm` if it is missing); both live in
+`/Library/TeX/texbin`, which must be on the `PATH`.
+
+### Windows
+
+In PowerShell. Julia comes from juliaup through winget; MiKTeX, which brings
+`dvisvgm`, is optional. Git for Windows is needed only to clone: do it with
+`git clone -c core.autocrlf=input …`, or `bin/janim` comes out with CRLF.
+
+```powershell
+winget install -e --id Julialang.Juliaup
+winget install -e --id MiKTeX.MiKTeX      # optional: Tex(…; via = :latex)
+```
+
+Open a new terminal so the `PATH` is fresh, then `juliaup add 1.12` and
+`juliaup default 1.12` (the `Manifest.toml` was made with 1.12), and run
+`Pkg.instantiate()` as above. One more step after it: the WebGPU library
+comes in an artifact whose Windows tarball lacks the executable bit, which
+Julia's `Tar` turns into a file Windows refuses to load (`could not load
+library … Access is denied`). Grant it once per depot:
+
+```powershell
+Get-ChildItem "$env:USERPROFILE\.julia\artifacts" -Recurse -Filter wgpu_native.dll |
+  ForEach-Object { icacls $_.FullName /grant "*S-1-1-0:(RX)" }
+```
+
+Fonts: download [DejaVu](https://github.com/dejavu-fonts/dejavu-fonts/releases),
+select the `.ttf` files, right-click, *Install*. They land in
+`%LOCALAPPDATA%\Microsoft\Windows\Fonts`, where Janim finds them. If you
+installed MiKTeX, open MiKTeX Console and set the on-the-fly package
+installation to *Always* (or run
+`initexmf --set-config-value=[MPM]AutoInstall=1`).
+
+`bin/janim` is bash and its daemon does not run on Windows yet; render with
+`julia --project=. scene.jl` as below.
 
 ## A minimal scene
 
@@ -112,8 +173,8 @@ The quality flag sets resolution and frame rate together:
 | `-qk` | 3840×2160 | 60 |
 
 Rendering runs on the GPU by default. Set `JANIM_HEADLESS=1` (for the daemon,
-or for a `julia` run) to render on the CPU with lavapipe (Linux only: macOS
-has no CPU adapter).
+or for a `julia` run) to render on the CPU: lavapipe on Linux, WARP on Windows
+(macOS has no CPU adapter).
 
 ## Examples
 
@@ -141,9 +202,10 @@ of many examples, and the comments of the demos, are in Spanish.
 
 ## Known limitations
 
-- **Linux and macOS (Apple Silicon) only.** Windows is not supported. Frames
-  are reproducible within a route (RADV, lavapipe or Metal), and Metal can
-  differ from Linux by a pixel at some edges.
+- **Windows is a partial port.** Rendering to a file works (DX12); the CLI
+  with its daemon and the live window do not yet. Frames are reproducible
+  within a route (RADV, lavapipe, Metal, DX12 or WARP), and routes can differ
+  from each other by a pixel at some edges.
 - **No motion blur in video.** `Scene` refuses `motion_blur > 1`, and so does
   the CLI's `--motion-blur`. What exists is `render_frame_motion`, which
   averages several exposures into a single still frame. The lessons in
