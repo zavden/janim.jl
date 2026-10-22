@@ -34,7 +34,7 @@ narrated vocabulary — `Circle`, `Transform`, `play!`, `next_to!`,
   Apple Silicon**, where Janim draws with Metal (tested on macOS 26.6, Apple
   M1), or **Windows 11**, where it draws with DX12 (tested on Windows 11
   25H2, AMD Radeon RX 9070 XT) and the command line runs from Git Bash (the
-  port's notes are in [`WINDOWS.md`](WINDOWS.md)).
+  port's notes are in [`history/2026-10/WINDOWS.md`](history/2026-10/WINDOWS.md)).
 - **Julia 1.11 or newer** (developed on 1.12).
 - The fonts your scenes ask for. The examples use DejaVu Sans.
 - Optional: **`latex` and `dvisvgm`** on the `PATH`, only for

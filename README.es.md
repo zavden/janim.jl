@@ -37,7 +37,7 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
   Apple Silicon**, donde Janim dibuja con Metal (probado en macOS 26.6, Apple
   M1), o **Windows 11**, donde dibuja con DX12 (probado en Windows 11 25H2,
   AMD Radeon RX 9070 XT) y la línea de órdenes corre desde Git Bash (las
-  notas del port están en [`WINDOWS.md`](WINDOWS.md)).
+  notas del port están en [`history/2026-10/WINDOWS.md`](history/2026-10/WINDOWS.md)).
 - **Julia 1.11 o posterior** (desarrollado con la 1.12).
 - Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans.
 - Opcional: **`latex` y `dvisvgm`** en el `PATH`, solo para
