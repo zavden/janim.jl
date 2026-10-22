@@ -13,6 +13,52 @@ lo que aprendas en una sirve para la otra. Lee también el `MACOS.md` de este
 repo: el port a macOS es el precedente, y la ventana en vivo de Windows se
 escribe en el mismo sitio y con la misma forma que la de Cocoa.
 
+## Resultado · 2026-10-21, Windows 11 Home 25H2, Ryzen 7 9700X, Radeon RX 9070 XT, Julia 1.12.7 (juliaup)
+
+**Hecho el §2: el render a fichero funciona.** `Pkg.instantiate()` y el
+primer mp4, comprobados en esta máquina el 2026-10-21. Fórmulas, capas y 3D
+(la lista final del §2), la CLI y el daemon (§4), la ventana (§5) y Julia
+contra Python (§6) siguen pendientes.
+
+- **§1 · Preparar.** El ID de winget era `Julialang.Juliaup`, no
+  `Julia.Julialang` (corregido abajo). juliaup instala la 1.13 por defecto;
+  `juliaup add 1.12` y `juliaup default 1.12` dejan la 1.12.7, con la que se
+  hizo todo. Git 2.56 con `core.autocrlf=true` sacó `bin/janim` con CRLF,
+  como se preveía; `git clone -c core.autocrlf=input` lo evita. DejaVu 2.37 y
+  Liberation 2.1.5 instaladas para el usuario, en
+  `%LOCALAPPDATA%\Microsoft\Windows\Fonts`.
+- **§2 · Instalar y renderizar.** `Pkg.instantiate()` tarda 1:37 (203
+  paquetes precompilados; Janim, 25 s). **Lo que no estaba previsto:** el
+  primer `julia … 01_how_janim_works.jl` murió con `could not load library
+  "…\.julia\artifacts\330a41ac…\lib\wgpu_native.dll" — Acceso denegado`. El
+  tarball `WGPU.v24.0.0.1.x86_64-windows.tar.gz` de WGPUNative.jl 0.1.5
+  guarda la DLL con modo `-rw-rw-rw-`, sin bit de ejecución; `Tar` de Julia
+  en Windows (`extract.jl:109-121`, `chmod` con 0o644) lo traduce a una ACL
+  explícita `(R,WA)`, sin ejecución, y `LoadLibrary` falla con error 5. Las
+  DLL de BinaryBuilder vienen con 0755 y salen con `(RX,WA)`: de las 57 DLL
+  del depot, esta es la única real sin X. El arreglo que documenta el README
+  es `icacls <dll> /grant "*S-1-1-0:(RX)"`, una vez por depot. Alternativas:
+  reempaquetar el tarball de Windows con 0755 (otro artefacto en
+  `Artifacts.toml`) o pedirlo en WGPUNative.jl. Con el permiso, el mp4 sale
+  en 7 s (854×480, 114 frames a 30 fps, h264) y se ve bien.
+  - **§2.1, confirmado:** `JANIM_HEADLESS=1` funciona: WARP sale como
+    «Microsoft Basic Render Driver», `kind = :cpu`, y el mismo mp4 tarda 6 s
+    y da otros bytes que la GPU.
+  - **§2.2:** ningún pánico.
+  - **§2.3:** el ABI cuadra: ni basura en los callbacks ni valores absurdos.
+  - **§2.4, falso:** DX12 no da el nombre del vendedor. wgpu-native pone en
+    `vendor` la versión del driver («32.0.32015.7029») y deja `description`
+    vacía: el slug es `320320157029` (WARP: `100261009711`, la build de
+    Windows) y la versión `unknown`, igual que en Janim.py. No rompe nada,
+    pero cambia con cada driver; si importa, derivarlo de `vendor_id`.
+  - **§2.5, confirmado:** BaseDirs 1.4 (`nt.jl:271`) incluye la carpeta del
+    usuario y «DejaVu Sans» se encuentra sin variables. El texto del ejemplo
+    se ve en DejaVu; no se ha mirado más.
+- **§3 · DX12.** Nada se vio MAL en el único ejemplo probado.
+- **§4, §5, §6.** Sin empezar.
+- **Lo que no cambió:** nada en `src/`. Solo `README.md`, `README.es.md` y
+  este fichero.
+
 ## 0 · Reglas de trabajo
 
 - **El objetivo** es que en un Windows 11 funcionen: el render a fichero, la
@@ -40,8 +86,10 @@ escribe en el mismo sitio y con la misma forma que la de Cocoa.
 - **Windows 11** (o Windows 10 con DX12). Cualquier GPU con driver WDDM y
   Direct3D 12; sin GPU, DX12 ofrece WARP, el rasterizador por software de
   Microsoft (§2.1).
-- **Julia 1.12 con juliaup** (`winget install Julia.Julialang`), x86-64. El
-  `Manifest.toml` se generó con la 1.12.6.
+- **Julia 1.12 con juliaup** (`winget install -e --id Julialang.Juliaup`, y
+  luego `juliaup add 1.12` y `juliaup default 1.12`; este fichero decía
+  `Julia.Julialang`, que no existe), x86-64. El `Manifest.toml` se generó
+  con la 1.12.6.
 - **Git for Windows**, por su Git Bash: `bin/janim` es bash y no tiene
   equivalente en PowerShell (§4). Ojo con `core.autocrlf`: si está en `true`
   (el valor por defecto del instalador), `bin/janim` sale con CRLF y bash
