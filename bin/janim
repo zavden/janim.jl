@@ -168,11 +168,22 @@
 # point at one.
 #
 # Port: $JANIM_PORT (default 7318).
+#
+# WINDOWS: run it from Git Bash (`bin/janim …`). Paths may be written `C:\…`,
+# `C:/…` or `/c/…` and may hold spaces; `-p` opens the file with its player.
 set -euo pipefail
 
 PORT="${JANIM_PORT:-7318}"
 PIDFILE="${XDG_CACHE_HOME:-$HOME/.cache}/janim/daemon.pid"
 LOGFILE="$(dirname "$PIDFILE")/daemon.log"
+
+# Git Bash on Windows (MSYS2 — bash calls itself `msys`, or `cygwin` in the
+# newer builds Git ships). Julia is a NATIVE program there: every path that
+# crosses to it goes in mixed form (`C:/Users/…`, which Julia reads and bash
+# can still test and mkdir), the process tools are Windows' own, and a path
+# usually holds a space («C:/Users/Name Surname»). Each `((WIN))` below is
+# that branch; Linux and macOS take the other one, which is the code as it was.
+case "$OSTYPE" in msys|cygwin) WIN=1 ;; *) WIN=0 ;; esac
 
 # Strict determinism is always on: there is no knob to export. The WebGPU
 # backend's drivers — RADV, lavapipe — compile at pipeline creation and have
@@ -217,9 +228,24 @@ _connect3() {
     return "$st"
 }
 
+# The request line → fd 3. The daemon splits it on whitespace, so on Windows
+# every space INSIDE a field travels as `|` — a character no Win32 path can
+# contain, which is what makes the swap lossless — and `_serve` puts the
+# spaces back (gated on Sys.iswindows(), so a Linux or macOS daemon gets the
+# line exactly as before).
+_send() {
+    if ((WIN)); then
+        local a enc=()
+        for a in "$@"; do enc+=("${a// /|}"); done
+        echo "${enc[*]}" >&3
+    else
+        echo "$*" >&3
+    fi
+}
+
 try_talk() {
     _connect3 || return 9
-    echo "$*" >&3
+    _send "$@"
     IFS= read -r reply <&3
     exec 3<&- 3>&-
     echo "$reply"
@@ -248,7 +274,7 @@ talk_stream() {
         echo "    start one with: janim daemon start" >&2
         exit 1
     }
-    echo "$*" >&3
+    _send "$@"
     local line
     while IFS= read -r line <&3; do
         case "$line" in
@@ -267,6 +293,9 @@ talk_stream() {
 }
 
 janim_root() {
+    # Windows: mixed form, so `--project=` reaches julia.exe already spelled
+    # the way it reads it, whatever MSYS decides about converting the argument
+    ((WIN)) && { cygpath -m "$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"; return; }
     cd "$(dirname "$(readlink -f "$0")")/.." && pwd
 }
 
@@ -274,7 +303,32 @@ janim_root() {
 # ours — every path that crosses the socket goes absolute. Pure bash rather
 # than `readlink -f`, because an output file need not exist yet.
 abs_path() {
+    ((WIN)) && { _win_abs_path "$1"; return; }
     case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s/%s\n' "$PWD" "$1" ;; esac
+}
+
+# Windows: `cygpath -ma` takes `/c/x`, `C:\x`, `C:/x` and a relative `x`
+# alike to the mixed absolute form, for a file that need not exist yet. The
+# `:name` of an address is split off first and put back after — cygpath
+# would swallow the colon.
+_win_abs_path() {
+    local name=""
+    case "$1" in *.jl:*) name="${1##*.jl:}"; set -- "${1%.jl:*}.jl" ;; esac
+    printf '%s%s\n' "$(cygpath -ma -- "$1")" "${name:+:$name}"
+}
+
+# An absolute path: `/…` everywhere, and `C:\…` or `C:/…` on Windows too.
+_is_abs() {
+    case "$1" in /*) return 0 ;; esac
+    ((WIN)) && [[ "$1" == [A-Za-z]:[/\\]* ]]
+}
+
+# `OK <path> (…)` → the path: field 2, except on Windows, where the path can
+# hold spaces — there it is everything between `OK ` and the ` (` of the note.
+_reply_path() {
+    local line="${1%%$'\n'*}"
+    if ((WIN)); then line="${line#OK }"; printf '%s\n' "${line%% (*}"
+    else printf '%s\n' "$line" | awk '{print $2}'; fi
 }
 
 # `file.jl:scene` addresses — bash's copy of Julia's `_scene_address`
@@ -308,6 +362,14 @@ open_output() {
                 opener="xdg-open"
             fi
             ;;
+        MINGW*|MSYS*|CYGWIN*)
+            # Windows: hand the file to its registered player, as a double
+            # click would. `start` is cmd's; the `""` is the window title it
+            # insists on reading first, and `//c` reaches cmd as `/c` — Git
+            # Bash would turn a lone `/c` into a path.
+            cmd.exe //c start "" "$(cygpath -w -- "$path")" >/dev/null 2>&1 ||
+                echo "WARN -p: could not open $path" >&2
+            return 0 ;;
         *)
             if command -v xdg-open >/dev/null 2>&1; then
                 opener="xdg-open"
@@ -419,6 +481,7 @@ _listening_pids() {
 # is to say so: with no way to see sockets, EVERY daemon looks dead, and a
 # `finish` that believed that would kill the one you are using.
 _can_see_sockets() {
+    ((WIN)) && return 0          # PowerShell lists the listeners (below)
     command -v ss >/dev/null 2>&1 || command -v lsof >/dev/null 2>&1
 }
 
@@ -437,6 +500,7 @@ _can_see_sockets() {
 # in pgrep's ERE, so the pattern reads as `daemonport = 7363`) and reports a
 # clean machine while fourteen daemons run. Escape them, or match differently.
 _classify_daemons() {
+    ((WIN)) && { _classify_daemons_win; return; }
     local snap listening mine="" blind=0
     _can_see_sockets || blind=1
     snap="$(ps -eo pid=,rss=,args= 2>/dev/null)"
@@ -454,18 +518,66 @@ _classify_daemons() {
         }'
 }
 
+# Windows: the same lines (plus a sixth field, the launcher's pid or `-`),
+# from one PowerShell call — `ps` here has no `-o`, and `ss`/`lsof` do not
+# exist. juliaup's launcher (`julialauncher.exe` from the Store, or a
+# `julia.exe` shim) carries the `daemon(port = N)` text on ITS command line
+# and runs the real julia as a CHILD with a bare one; that child is the
+# process that listens and holds the heap, so it is the one reported, and the
+# launcher rides along as its wrapper for `finish` to close too.
+_win_julia_snapshot() {    # pid rss_kb ppid name listening|not-listening command line
+    powershell.exe -NoProfile -NonInteractive -Command "
+        \$l = (Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue).OwningProcess
+        Get-CimInstance Win32_Process -Filter \"Name='julia.exe' or Name='julialauncher.exe'\" |
+            ForEach-Object { '{0} {1} {2} {3} {4} {5}' -f \$_.ProcessId, [int](\$_.WorkingSetSize / 1KB),
+                \$_.ParentProcessId, \$_.Name,
+                \$(if (\$l -contains \$_.ProcessId) { 'listening' } else { 'not-listening' }), \$_.CommandLine }
+    " 2>/dev/null | tr -d '\r'
+}
+
+_classify_daemons_win() {
+    local snap rec="" mine=""
+    snap="$(_win_julia_snapshot)"
+    # the pidfile holds bash's pid for the launcher it started; `ps` maps it
+    # to the Windows pid the snapshot speaks
+    [[ -f "$PIDFILE" ]] && rec="$(cat "$PIDFILE" 2>/dev/null)"
+    [[ -n "$rec" ]] && mine="$(ps -p "$rec" 2>/dev/null | awk 'NR == 2 {print $4}')"
+    printf '%s\n' "$snap" | awk -v mine="$mine" -v myport="$PORT" '
+        NF >= 5 {
+            pid = $1; rss[pid] = $2; ppid[pid] = $3; here[pid] = $5; order[++n] = pid
+            if (match($0, /daemon\(port *= *[0-9]+\)/)) {
+                p = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", p); port[pid] = p
+            }
+        }
+        END {
+            for (i = 1; i <= n; i++) {          # a child of a launcher IS its daemon
+                pid = order[i]; pp = ppid[pid]
+                if ((pp in port) && !(pid in port)) { port[pid] = port[pp]; wrapper[pid] = pp; drop[pp] = 1 }
+            }
+            for (i = 1; i <= n; i++) {
+                pid = order[i]
+                if (!(pid in port) || (pid in drop)) continue
+                wr = (pid in wrapper) ? wrapper[pid] : "-"
+                role = ((mine != "" && (pid == mine || wr == mine)) ||
+                        (port[pid] == myport && here[pid] == "listening")) ? "yours" : "orphan"
+                print role, pid, port[pid], rss[pid], here[pid], wr
+            }
+        }'
+}
+
 # Is a test run in progress right now? Its daemons look exactly like orphans
 # and are not — killing them mid-run manufactures the false failures this whole
 # section exists to prevent.
 _suites_running() {
-    local snap; snap="$(ps -eo args= 2>/dev/null)"
+    local snap
+    if ((WIN)); then snap="$(_win_julia_snapshot)"; else snap="$(ps -eo args= 2>/dev/null)"; fi
     printf '%s\n' "$snap" | grep -Eq 'julia.*(verify_[a-z0-9_.]*\.jl|runtests\.jl)'
 }
 
 # Exits 1 when there are orphans, so it can gate a script or a habit.
 check_cmd() {
-    local n=0 orph=0 kb=0 role pid port rss here
-    while read -r role pid port rss here; do
+    local n=0 orph=0 kb=0 role pid port rss here wrapper
+    while read -r role pid port rss here wrapper; do
         [[ -n "$pid" ]] || continue
         n=$((n + 1))
         [[ "$role" == orphan ]] && { orph=$((orph + 1)); kb=$((kb + rss)); }
@@ -499,23 +611,32 @@ finish_cmd() {
         return 1
     fi
 
-    local pids=() kb=0 role pid port rss here
-    while read -r role pid port rss here; do
+    local pids=() kb=0 n=0 role pid port rss here wrapper
+    while read -r role pid port rss here wrapper; do
         [[ "$role" == orphan ]] || continue
-        pids+=("$pid"); kb=$((kb + rss))
+        pids+=("$pid"); kb=$((kb + rss)); n=$((n + 1))
+        [[ -n "$wrapper" && "$wrapper" != - ]] && pids+=("$wrapper")   # Windows: its launcher
     done <<< "$(_classify_daemons)"
-    ((${#pids[@]})) || { echo "OK no orphan daemons"; return 0; }
+    ((n)) || { echo "OK no orphan daemons"; return 0; }
 
-    kill "${pids[@]}" 2>/dev/null || true
-    # TERM first, then insist: a daemon parked inside a GPU call can take a
-    # moment, and one that is wedged there would otherwise survive the cleanup
-    # that just told you it had happened.
-    sleep 1
-    local left=() p
-    for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && left+=("$p"); done
-    ((${#left[@]})) && { kill -9 "${left[@]}" 2>/dev/null || true; }
+    if ((WIN)); then
+        # Windows pids, which bash's `kill` cannot reach, and no TERM to try
+        # first: taskkill ends them outright, /T taking any farm worker along.
+        local args=() p
+        for p in "${pids[@]}"; do args+=(//PID "$p"); done
+        taskkill //F //T "${args[@]}" >/dev/null 2>&1 || true
+    else
+        kill "${pids[@]}" 2>/dev/null || true
+        # TERM first, then insist: a daemon parked inside a GPU call can take a
+        # moment, and one that is wedged there would otherwise survive the
+        # cleanup that just told you it had happened.
+        sleep 1
+        local left=() p
+        for p in "${pids[@]}"; do kill -0 "$p" 2>/dev/null && left+=("$p"); done
+        ((${#left[@]})) && { kill -9 "${left[@]}" 2>/dev/null || true; }
+    fi
     printf 'OK closed %d orphan daemon(s), %d MB freed (pids: %s)\n' \
-           "${#pids[@]}" "$((kb / 1024))" "${pids[*]}"
+           "$n" "$((kb / 1024))" "${pids[*]}"
 }
 
 # ── flags, shared by render/frame/preview ──────────────────────────────────
@@ -938,10 +1059,11 @@ render_go() {
             OUT="$sbase$ext"
         fi
     elif [[ -n "$OUTDIR" ]]; then
-        case "$OUT" in
-            /*) echo "WARN --out_dir ignored: -o $OUT is absolute and already says where" >&2 ;;
-            *)  OUT="$OUTDIR/$OUT" ;;
-        esac
+        if _is_abs "$OUT"; then
+            echo "WARN --out_dir ignored: -o $OUT is absolute and already says where" >&2
+        else
+            OUT="$OUTDIR/$OUT"
+        fi
     fi
     OUT="$(abs_path "$OUT")"
     [[ -n "$OUTDIR" ]] && mkdir -p "$(dirname "$OUT")"
@@ -963,7 +1085,7 @@ render_go() {
              "$STILL" "$SAMPLES")" || rc=$?
     [[ -z "$reply" ]] || printf '%s\n' "$reply"
     if [[ "$OPEN" == yes && $rc -eq 0 ]]; then
-        open_output "$(printf '%s\n' "$reply" | awk 'NR==1{print $2}')"
+        open_output "$(_reply_path "$reply")"
     fi
     exit $rc
 }
@@ -1043,7 +1165,7 @@ main() {
             # --out_dir reaches the still too (a cfg line means both
             # verbs); an absolute path already says where and wins.
             local fout="${POSITIONAL[2]}"
-            [[ -n "$OUTDIR" && "$fout" != /* ]] && fout="$OUTDIR/$fout"
+            [[ -n "$OUTDIR" ]] && ! _is_abs "$fout" && fout="$OUTDIR/$fout"
             fout="$(abs_path "$fout")"
             [[ -n "$OUTDIR" ]] && mkdir -p "$(dirname "$fout")"
             talk render "$(abs_path "${POSITIONAL[0]}")" "${POSITIONAL[1]}" \

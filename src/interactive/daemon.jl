@@ -116,6 +116,11 @@ end
 
 function _serve(line_str::String, sock = nothing)
     parts = split(strip(line_str))
+    # Windows: bin/janim sends each space INSIDE a field as `|` (its `_send`),
+    # because a home folder there is usually «C:/Users/Name Surname» and the
+    # split above is on whitespace; no Win32 path can contain a `|`, so the
+    # spaces come back without loss. Linux and macOS take the line as it came.
+    Sys.iswindows() && (parts = [replace(p, '|' => ' ') for p in parts])
     isempty(parts) && return "ERR empty"
     cmd = parts[1]
     cmd == "ping" && return "OK pong"
