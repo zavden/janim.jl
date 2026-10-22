@@ -100,8 +100,10 @@ fn fs_crt(in: QuadOut) -> @location(0) vec4<f32> {
     // aperture grille: a 3-pixel RGB stripe (`mod`, written out)
     let fx = in.position.x;
     let col = i32(fx - 3.0 * floor(fx / 3.0));
-    var grille = vec3<f32>(1.0 - mask_depth * intensity);
-    grille[col] = 1.0;
+    // selected, not assigned: FXC (DX12) refuses `grille[col] = 1.0`, a
+    // component write through a dynamic index (X3500); the value is the same
+    let grille = select(vec3<f32>(1.0 - mask_depth * intensity), vec3<f32>(1.0),
+                        vec3<bool>(col == 0, col == 1, col == 2));
 
     // vignette: 0 at the centre, 1 at the corner (dot(c,c) peaks at ½)
     let vig = 1.0 - vignette * intensity * clamp(dot(c, c) * 2.0, 0.0, 1.0);
