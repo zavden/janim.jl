@@ -16,11 +16,10 @@ escribe en el mismo sitio y con la misma forma que la de Cocoa.
 ## Resultado · 2026-10-21, Windows 11 Home 25H2, Ryzen 7 9700X, Radeon RX 9070 XT, Julia 1.12.7 (juliaup)
 
 **Hechos el §2, el §3, el §5 y el §6.** Render a fichero, las doce demos a
-720p60, la ventana en vivo y Julia contra Python, comprobados en esta
-máquina el 2026-10-21 y la madrugada del 22. Faltan el §4 (la CLI y el
-daemon bajo Git Bash), probar a mano las teclas y el ratón de la ventana, y
-la comparación de frames en Linux y macOS que pide el §0, porque un shader
-común cambió. Todo está en la rama `testing-windows`.
+720p60, la ventana en vivo con teclas y ratón, y Julia contra Python,
+comprobados en esta máquina el 2026-10-21 y el 22 (la ventana, a mano por
+Alex). Faltan el §4 (la CLI y el daemon bajo Git Bash) y la comparación de
+frames en Linux y macOS que pide el §0, porque un shader común cambió.
 
 - **§1 · Preparar.** El ID de winget era `Julialang.Juliaup`, no
   `Julia.Julialang` (corregido abajo). juliaup instala la 1.13 por defecto;
@@ -72,9 +71,9 @@ común cambió. Todo está en la rama `testing-windows`.
   `:win32`. La superficie queda en `BGRA8Unorm` con CopySrc y
   `_framebuffer_size` es `(854, 480)` para una ventana de 854×480. El bucle
   en vivo con `03_portals` a 15 fps presentó 188 frames en 20 s sin
-  reconfigurar (los primeros segundos son compilación). **Sin probar a
-  mano:** teclas, ratón y dos previews seguidas; el daemon no existe aquí
-  todavía (§4).
+  reconfigurar (los primeros segundos son compilación). **Teclas y ratón:**
+  probados a mano por Alex el 2026-10-22: funcionan. Desde el daemon, sin
+  probar: no existe aquí todavía (§4).
 - **§6 · Julia contra Python.** Hecho con los arneses del `MACOS.md`, a
   640×360 y 10 fps, un proceso por render: las cinco demos dan frames
   **idénticos byte a byte** en DX12 (140, 140, 180, 141 y 220).
