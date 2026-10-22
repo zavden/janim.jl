@@ -62,7 +62,7 @@ mutable struct GPUPresenter
     gpu::GPU
     handle::Ptr{Cvoid}                # the GLFW window's handle: the registry's key
     surface::WGPUSurface
-    platform::Symbol                  # :wayland | :x11 | :cocoa — which source made the surface
+    platform::Symbol                  # :wayland | :x11 | :cocoa | :win32 — which source made the surface
     format::WGPUTextureFormat         # the plain form of the surface's preferred format
     width::Int                        # configured size, in physical pixels
     height::Int
@@ -105,7 +105,7 @@ function create_window(width::Int, height::Int; title = "Janim", visible = true)
     window = Base.invokelatest(_create_window_noapi, width, height; title, visible)
     plat = gl_platform()
     if visible && !_NULL_PLATFORM[]
-        if plat === :wayland || plat === :x11 || plat === :cocoa
+        if plat === :wayland || plat === :x11 || plat === :cocoa || plat === :win32
             try
                 _attach_presenter!(_shared_gpu(), window, plat)
             catch
@@ -149,6 +149,14 @@ function _create_surface(inst::WGPUInstance, handle::Ptr{Cvoid}, plat::Symbol)
         layer = _cocoa_metal_layer!(handle)
         src = Ref(WGPUSurfaceSourceMetalLayer(
             WGPUChainedStruct(C_NULL, WGPUSType_SurfaceSourceMetalLayer), layer))
+        desc = Ref(WGPUSurfaceDescriptor(Ptr{WGPUChainedStruct}(pointer_from_objref(src)), _EMPTY_SV))
+        surface = GC.@preserve src desc wgpuInstanceCreateSurface(inst, desc)
+    elseif plat === :win32
+        hwnd = ccall((:glfwGetWin32Window, GLFW_jll.libglfw), Ptr{Cvoid}, (Ptr{Cvoid},), handle)
+        hwnd == C_NULL && throw(GPUValidationError("GLFW gave no Win32 window for the window"))
+        hinstance = ccall((:GetModuleHandleW, "kernel32"), Ptr{Cvoid}, (Ptr{Cvoid},), C_NULL)
+        src = Ref(WGPUSurfaceSourceWindowsHWND(
+            WGPUChainedStruct(C_NULL, WGPUSType_SurfaceSourceWindowsHWND), hinstance, hwnd))
         desc = Ref(WGPUSurfaceDescriptor(Ptr{WGPUChainedStruct}(pointer_from_objref(src)), _EMPTY_SV))
         surface = GC.@preserve src desc wgpuInstanceCreateSurface(inst, desc)
     else

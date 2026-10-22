@@ -951,6 +951,12 @@ struct WGPUSurfaceSourceMetalLayer
     layer::Ptr{Cvoid}
 end
 
+struct WGPUSurfaceSourceWindowsHWND
+    chain::WGPUChainedStruct
+    hinstance::Ptr{Cvoid}
+    hwnd::Ptr{Cvoid}
+end
+
 struct WGPUSurfaceTexture
     nextInChain::Ptr{WGPUChainedStructOut}
     texture::WGPUTexture
