@@ -16,6 +16,107 @@ comparten los shaders WGSL, y el único shader común que cambió es el mismo en
 las dos (§2). Los arneses de comparación están en el `MACOS.md` de este
 repo, §6.
 
+## Resultado · 2026-10-22, Fedora 44, Ryzen 7 9700X, Radeon RX 9070 XT (RADV, Mesa 26.2.5), Julia 1.12.6 (juliaup), sway 1.11 (Wayland) + Xwayland
+
+**Nada cambió en Linux.** Hechos el §1 (lo comprobable sin reinstalar
+Julia), el §2, el §3, el §4 y el §5 entre `0c63cf3` y `main`
+(`a17ef2e`), con dos clones limpios y un depot propio, el 2026-10-22.
+
+- **§1 · Instalar.** Los once paquetes de la línea `dnf` del README existen
+  en los repositorios de Fedora 44 (`dnf repoquery`; aquí faltaba solo
+  `texlive-preview`, que existe). Los de la línea `apt` existen en Debian
+  (`packages.debian.org`); no se instaló nada. `Pkg.instantiate()` en el
+  clon nuevo precompila Janim en 18 s. Un detalle del README hermano
+  (Janim.py) que también vale aquí: las lecciones `03_text`,
+  `05_physics_warning` y `06_cli_and_farm` piden Liberation Serif y Mono, y
+  las líneas `dnf`/`apt` no las nombran (`liberation-fonts` en Fedora,
+  `fonts-liberation` en Debian); aquí estaban instaladas.
+- **§2 · Frames, byte a byte.** Las 119 escenas de `examples/` (las tres
+  `construct_a/b/c` de `scenes/08_tux_wild.jl` y las dos escenas con nombre
+  de `07_multiscene.jl` incluidas): **123 renders, 8 053 frames, idénticos**
+  antes y después a 640×360 y 10 fps en RADV (un SHA-256 por frame por
+  `_FRAME_TAP`, un proceso por lado con cada escena en su módulo). La
+  `06_broadcast`, la del CRT, da los mismos 198 frames: el `select` vale lo
+  que valía `grille[col] = 1.0`. Julia contra Python (Janim.py en `main`):
+  `01`, `03`, `04`, `07`, `11` idénticas como en Windows, y también `10` (90
+  frames) y `12` (66; aquí la fuente Fredoka está instalada); `02`, `05`,
+  `06`, `08` y `09` difieren, como ya diferían antes del port (`MACOS.md`
+  §6).
+- **§3 · El código común.** `include_dependency`: con `main`, un comentario
+  añadido a `effects.wgsl` hace que el siguiente `using Janim` recompile
+  Janim (18,7 s) y restaurar el fichero recompila otra vez; sin cambios, 0,7
+  s; con `0c63cf3` el mismo comentario NO recompilaba (el fallo que Windows
+  encontró). `gpu_info()` da `radv`, `vulkan`, `Mesa 26.2.5`, `:discrete`;
+  con `JANIM_HEADLESS=1`, llvmpipe y `:cpu`. La rama `:win32` de
+  `_create_surface` es inerte: la ventana abre en Wayland y en X11 (abajo).
+  El daemon contesta igual; `_is_abs`, `abs_path`, `_reply_path` y `_send`
+  dan en Linux lo mismo que el código anterior (probados sueltos y por la
+  CLI).
+- **§4 · CLI, daemon y ventana.** La lista entera, con el daemon en el 7391
+  y `xdg-open` sustituido por un stub que anota la llamada: `-p` lo llama
+  con la ruta correcta; `-o out.mp4 --out_dir` se une; `-o /abs.mp4
+  --out_dir` avisa y gana la absoluta; `frame … --out_dir`; `-s --to 40`;
+  `x.jl:construct -s --to 10`; `-j 2` (140 frames, 2 procesos); `-t`
+  (ProRes 4444); `states`; la lección LaTeX; el multi-escena `:intro`;
+  `check` solo con el mío; un huérfano real en el 7400: `check` lo lista
+  como `orphan … listening` y sale 1, `finish` cierra 1 (582 MB) y respeta
+  el mío. La ventana: `live()` en Wayland (147 frames en 10 s) y en X11 (dos
+  sesiones seguidas), la preview caliente por el daemon cerrada con Esc, la
+  caliente de nuevo cerrada por Ctrl-C (SIGINT al grupo del trabajo, como lo manda la terminal: la CLI
+  sale con 130, la ventana se cierra y el daemon sigue contestando), y la fría sin daemon
+  (`-e "live(…)"`) cerrada con Esc. El panel (TTY) no se probó: su código no
+  cambió.
+- **Una cosa vista que NO es del port**, reproducida con `0c63cf3`: si la
+  ventana se destruye a pocos milisegundos de su primer frame presentado
+  (un `live(…; max_seconds = 3)` con Julia fría, donde el JIT se come los 3
+  s), GLFW 3.4.0 en Wayland despacha tras `glfwDestroyWindow` un
+  `wp_fractional_scale_v1.preferred_scale` que había quedado en cola y pide
+  `wl_surface.set_opaque_region` sobre la superficie ya destruida: `wl_display
+  error 0: invalid object`, y a partir de ahí `glfwPollEvents` (el de
+  `close_context`) gira para siempre con el display en error (100 % de CPU,
+  SIGINT no lo saca). Con una sesión de 10 s, o cerrando a mano, no pasa.
+  Janim.py comparte GLFW 3.4.0 y la misma secuencia de cierre, pero sin JIT
+  su primer frame llega mucho antes del cierre y no lo provoca. Traza
+  `WAYLAND_DEBUG=1` en el informe de la sesión; decisión de Alex (es de
+  GLFW, no del port).
+- **§5 · Tiempos.** Abajo, junto a los de Windows.
+
+### §5 · Tiempos a 1920×1080 y 60 fps, Linux junto a Windows
+
+Linux: Fedora 44, Ryzen 7 9700X, Radeon RX 9070 XT (RADV, Mesa 26.2.5),
+`main` en `a17ef2e`, un render cada vez, reloj de pared del proceso entero
+con el `render-demo.jl` de abajo (Julia arranca en ~4 s; las 04, 10 y 12 sin
+su `motion_blur`), el 2026-10-22. Windows: la tabla de §5. La 12 aquí sí
+sale: Fredoka está instalada.
+
+| demo | frames | Julia Linux | Julia Windows | Python Linux | Python Windows |
+|---|---:|---:|---:|---:|---:|
+| 01_multicam | 840 | 8,0 s | 10 s | 5,5 s | 7 s |
+| 02_pendulum_glow | 1356 | 15,1 s | 18 s | 9,5 s | 12 s |
+| 03_portals | 840 | 10,9 s | 13 s | 6,9 s | 8 s |
+| 04_lorenz_glow | 1080 | 14,5 s | 16 s | 25,2 s | 61 s |
+| 05_rack_focus | 756 | 9,0 s | 11 s | 5,3 s | 6 s |
+| 06_broadcast | 1188 | 10,7 s | 13 s | 8,1 s | 8 s |
+| 07_text_mask | 846 | 9,8 s | 12 s | 44,0 s | 51 s |
+| 08_light_vs_pigment | 708 | 8,5 s | 10 s | 5,0 s | 5 s |
+| 09_reflection | 768 | 9,6 s | 11 s | 5,7 s | 6 s |
+| 10_motion_blur | 540 | 7,4 s | 9 s | 3,9 s | 4 s |
+| 11_chase_camera | 1320 | 12,3 s | 15 s | 9,8 s | 12 s |
+| 12_motion_blur | 396 | 5,8 s | falla (fuente) | 3,0 s | falla (fuente) |
+
+Los recuentos de frames son los mismos que en Windows. A esta resolución,
+y a través de x264, los mp4 de Julia y de Python decodifican a los mismos
+frames (`ffmpeg -f framemd5`) en las siete demos que coinciden a 640×360
+(`01`, `03`, `04`, `07`, `10`, `11`, `12`); los otros cinco pares difieren,
+como abajo.
+
+**Dos trampas del arnés, por si se repite esto:** un trabajo lanzado en segundo
+plano por un shell no interactivo nace con SIGINT ignorado (POSIX), así que
+`kill -INT` no simula un Ctrl-C salvo con `set -m` y la señal al grupo
+(`kill -INT -$pid`); y en Wayland las ventanas de GLFW no llevan `app_id`,
+solo título. **La decisión de las rutas con espacios (§4) sigue siendo de
+Alex**: no se tocó.
+
 ## 0 · Reglas de trabajo
 
 - **El objetivo** es confirmar que en Linux nada cambió: ni el código que
