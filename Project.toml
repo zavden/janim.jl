@@ -1,6 +1,6 @@
 name = "Janim"
 uuid = "a9cbc689-9ae3-4b91-8a6c-a697d8ff0f9e"
-version = "0.1.0"
+version = "1.0.0"
 authors = ["Alexander Vazquez <davz95@hotmail.com>"]
 
 [deps]

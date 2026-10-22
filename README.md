@@ -244,6 +244,7 @@ of many examples, and the comments of the demos, are in Spanish.
   `examples/tutorial/c3_05_motion_blur/` and the demos `04_lorenz_glow.jl`,
   `10_motion_blur.jl` and `12_motion_blur.jl` still describe the in-video
   version; they will be revised.
+- **What else is open** is listed in [`TODO.md`](TODO.md).
 
 ## License
 

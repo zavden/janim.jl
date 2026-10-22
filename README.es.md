@@ -251,6 +251,7 @@ muchos ejemplos está en español.
   `examples/tutorial/c3_05_motion_blur/` y las demos `04_lorenz_glow.jl`,
   `10_motion_blur.jl` y `12_motion_blur.jl` todavía describen la versión en
   vídeo; se revisarán.
+- **Lo demás que queda abierto** está en [`TODO.md`](TODO.md).
 
 ## Licencia
 
