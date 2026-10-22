@@ -33,8 +33,8 @@ narrated vocabulary — `Circle`, `Transform`, `play!`, `next_to!`,
 - **Linux** with a Vulkan driver (Mesa RADV, lavapipe or another), **macOS on
   Apple Silicon**, where Janim draws with Metal (tested on macOS 26.6, Apple
   M1), or **Windows 11**, where it draws with DX12 (tested on Windows 11
-  25H2, AMD Radeon RX 9070 XT). On Windows, rendering to a file from `julia`
-  works; the command line and the live window are still being written (see
+  25H2, AMD Radeon RX 9070 XT). On Windows, rendering and the live window
+  work from `julia`; the command line is still being written (see
   [`WINDOWS.md`](WINDOWS.md)).
 - **Julia 1.11 or newer** (developed on 1.12).
 - The fonts your scenes ask for. The examples use DejaVu Sans.
@@ -86,8 +86,7 @@ brew install --cask font-dejavu                     # the examples' font, into ~
 ### Windows
 
 In PowerShell. Julia comes from juliaup through winget; MiKTeX, which brings
-`dvisvgm`, is optional. Git for Windows is needed only to clone: do it with
-`git clone -c core.autocrlf=input …`, or `bin/janim` comes out with CRLF.
+`dvisvgm`, is optional. Git for Windows is needed only to clone.
 
 ```powershell
 winget install -e --id Julialang.Juliaup
@@ -113,8 +112,10 @@ installed MiKTeX, open MiKTeX Console and set the on-the-fly package
 installation to *Always* (or run
 `initexmf --set-config-value=[MPM]AutoInstall=1`).
 
-`bin/janim` is bash and its daemon does not run on Windows yet; render with
-`julia --project=. scene.jl` as below.
+`bin/janim` is bash and its daemon does not run on Windows yet: render with
+`julia --project=. scene.jl` as below, and open the live window with
+`julia --project=. -e 'using Janim; live(\"scene.jl\")'` (PowerShell wants
+the inner quotes escaped like that).
 
 ## A minimal scene
 
@@ -202,8 +203,8 @@ of many examples, and the comments of the demos, are in Spanish.
 
 ## Known limitations
 
-- **Windows is a partial port.** Rendering to a file works (DX12); the CLI
-  with its daemon and the live window do not yet. Frames are reproducible
+- **Windows is a partial port.** Rendering and the live window work (DX12,
+  verified on one machine); the CLI with its daemon does not yet. Frames are reproducible
   within a route (RADV, lavapipe, Metal, DX12 or WARP), and routes can differ
   from each other by a pixel at some edges.
 - **No motion blur in video.** `Scene` refuses `motion_blur > 1`, and so does

@@ -36,8 +36,8 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
 - **Linux** con un driver de Vulkan (Mesa RADV, lavapipe u otro), **macOS en
   Apple Silicon**, donde Janim dibuja con Metal (probado en macOS 26.6, Apple
   M1), o **Windows 11**, donde dibuja con DX12 (probado en Windows 11 25H2,
-  AMD Radeon RX 9070 XT). En Windows funciona el render a fichero desde
-  `julia`; la línea de órdenes y la ventana en vivo están por escribir (ver
+  AMD Radeon RX 9070 XT). En Windows funcionan el render y la ventana en vivo
+  desde `julia`; la línea de órdenes está por escribir (ver
   [`WINDOWS.md`](WINDOWS.md)).
 - **Julia 1.11 o posterior** (desarrollado con la 1.12).
 - Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans.
@@ -89,8 +89,7 @@ brew install --cask font-dejavu                     # la fuente de los ejemplos,
 ### Windows
 
 En PowerShell. Julia viene con juliaup desde winget; MiKTeX, que trae
-`dvisvgm`, es opcional. Git for Windows solo hace falta para clonar: hazlo con
-`git clone -c core.autocrlf=input …`, o `bin/janim` sale con CRLF.
+`dvisvgm`, es opcional. Git for Windows solo hace falta para clonar.
 
 ```powershell
 winget install -e --id Julialang.Juliaup
@@ -117,8 +116,10 @@ instalaste MiKTeX, abre MiKTeX Console y pon la instalación de paquetes que
 falten en *Always* (o ejecuta
 `initexmf --set-config-value=[MPM]AutoInstall=1`).
 
-`bin/janim` es bash y su daemon todavía no corre en Windows; renderiza con
-`julia --project=. escena.jl`, como abajo.
+`bin/janim` es bash y su daemon todavía no corre en Windows: renderiza con
+`julia --project=. escena.jl`, como abajo, y abre la ventana en vivo con
+`julia --project=. -e 'using Janim; live(\"escena.jl\")'` (PowerShell quiere
+las comillas interiores escapadas así).
 
 ## Una escena mínima
 
@@ -207,8 +208,9 @@ muchos ejemplos está en español.
 
 ## Limitaciones conocidas
 
-- **Windows es un port parcial.** El render a fichero funciona (DX12); la CLI
-  con su daemon y la ventana en vivo todavía no. Los frames son reproducibles
+- **Windows es un port parcial.** El render y la ventana en vivo funcionan
+  (DX12, comprobado en una sola máquina); la CLI con su daemon todavía no.
+  Los frames son reproducibles
   dentro de cada ruta (RADV, lavapipe, Metal, DX12 o WARP), y las rutas
   pueden diferir entre sí en un píxel en algunos bordes.
 - **No hay desenfoque de movimiento en el vídeo.** `Scene` rechaza

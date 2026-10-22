@@ -15,16 +15,18 @@ escribe en el mismo sitio y con la misma forma que la de Cocoa.
 
 ## Resultado · 2026-10-21, Windows 11 Home 25H2, Ryzen 7 9700X, Radeon RX 9070 XT, Julia 1.12.7 (juliaup)
 
-**Hecho el §2: el render a fichero funciona.** `Pkg.instantiate()` y el
-primer mp4, comprobados en esta máquina el 2026-10-21. Fórmulas, capas y 3D
-(la lista final del §2), la CLI y el daemon (§4), la ventana (§5) y Julia
-contra Python (§6) siguen pendientes.
+**Hechos el §2, el §3, el §5 y el §6.** Render a fichero, las doce demos a
+720p60, la ventana en vivo y Julia contra Python, comprobados en esta
+máquina el 2026-10-21 y la madrugada del 22. Faltan el §4 (la CLI y el
+daemon bajo Git Bash), probar a mano las teclas y el ratón de la ventana, y
+la comparación de frames en Linux y macOS que pide el §0, porque un shader
+común cambió. Todo está en la rama `testing-windows`.
 
 - **§1 · Preparar.** El ID de winget era `Julialang.Juliaup`, no
   `Julia.Julialang` (corregido abajo). juliaup instala la 1.13 por defecto;
   `juliaup add 1.12` y `juliaup default 1.12` dejan la 1.12.7, con la que se
   hizo todo. Git 2.56 con `core.autocrlf=true` sacó `bin/janim` con CRLF,
-  como se preveía; `git clone -c core.autocrlf=input` lo evita. DejaVu 2.37 y
+  como se preveía; el `.gitattributes` nuevo lo evita. DejaVu 2.37 y
   Liberation 2.1.5 instaladas para el usuario, en
   `%LOCALAPPDATA%\Microsoft\Windows\Fonts`.
 - **§2 · Instalar y renderizar.** `Pkg.instantiate()` tarda 1:37 (203
@@ -40,7 +42,9 @@ contra Python (§6) siguen pendientes.
   es `icacls <dll> /grant "*S-1-1-0:(RX)"`, una vez por depot. Alternativas:
   reempaquetar el tarball de Windows con 0755 (otro artefacto en
   `Artifacts.toml`) o pedirlo en WGPUNative.jl. Con el permiso, el mp4 sale
-  en 7 s (854×480, 114 frames a 30 fps, h264) y se ve bien.
+  en 7 s (854×480, 114 frames a 30 fps, h264) y se ve bien. Las doce demos
+  a 1280×720 y 60 fps salen en 7-13 s cada una (la 12 pide la fuente
+  «Fredoka Expanded», no instalada; las 04, 10 y 12 sin su `motion_blur`).
   - **§2.1, confirmado:** `JANIM_HEADLESS=1` funciona: WARP sale como
     «Microsoft Basic Render Driver», `kind = :cpu`, y el mismo mp4 tarda 6 s
     y da otros bytes que la GPU.
@@ -52,12 +56,29 @@ contra Python (§6) siguen pendientes.
     Windows) y la versión `unknown`, igual que en Janim.py. No rompe nada,
     pero cambia con cada driver; si importa, derivarlo de `vendor_id`.
   - **§2.5, confirmado:** BaseDirs 1.4 (`nt.jl:271`) incluye la carpeta del
-    usuario y «DejaVu Sans» se encuentra sin variables. El texto del ejemplo
-    se ve en DejaVu; no se ha mirado más.
-- **§3 · DX12.** Nada se vio MAL en el único ejemplo probado.
-- **§4, §5, §6.** Sin empezar.
-- **Lo que no cambió:** nada en `src/`. Solo `README.md`, `README.es.md` y
-  este fichero.
+    usuario y «DejaVu Sans» se encuentra sin variables.
+- **§3 · DX12.** Una cosa se vio MAL, y no por un píxel: FXC no compila
+  `effects.wgsl`, que escribía `grille[col] = 1.0` (una componente de `vec3`
+  con índice dinámico), y la demo 06 moría al entrar el efecto CRT con
+  `X3500: array reference cannot be used as an l-value`. Ahora es un
+  `select` con el mismo valor, en las dos bibliotecas. **Ojo:** `_wgsl` lee
+  los shaders al precompilar sin `include_dependency`, así que un `.wgsl`
+  cambiado solo entra cuando otro `.jl` invalida la caché; la primera prueba
+  del arreglo siguió fallando por eso.
+- **§4 · Daemon y CLI.** Sin empezar.
+- **§5 · La ventana.** Escrita como se preveía: `bindings.jl` gana
+  `WGPUSurfaceSourceWindowsHWND`, `_create_surface` la rellena con
+  `glfwGetWin32Window` y `GetModuleHandleW`, y `create_window` acepta
+  `:win32`. La superficie queda en `BGRA8Unorm` con CopySrc y
+  `_framebuffer_size` es `(854, 480)` para una ventana de 854×480. El bucle
+  en vivo con `03_portals` a 15 fps presentó 188 frames en 20 s sin
+  reconfigurar (los primeros segundos son compilación). **Sin probar a
+  mano:** teclas, ratón y dos previews seguidas; el daemon no existe aquí
+  todavía (§4).
+- **§6 · Julia contra Python.** Hecho con los arneses del `MACOS.md`, a
+  640×360 y 10 fps, un proceso por render: las cinco demos dan frames
+  **idénticos byte a byte** en DX12 (140, 140, 180, 141 y 220).
+- **Lo que no cambió:** `glfw.jl`, `context.jl`, `live.jl`, `bin/janim`.
 
 ## 0 · Reglas de trabajo
 
