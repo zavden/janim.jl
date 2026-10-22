@@ -12,6 +12,11 @@ ese fichero.
 
 ## Resultado · 2026-10-21, macOS 26.6.2, Apple M1, Julia 1.12.6 (juliaup)
 
+**El port está terminado.** Render a fichero, CLI con daemon y ventana en
+vivo con teclas y ratón, verificados por Alex el 2026-10-21 en este M1, en
+las dos bibliotecas; las siete primeras demos renderizadas a 1080p60 en las
+dos.
+
 Probado en el Mac, sección por sección. Lo previsto se cumplió casi entero;
 lo que resultó distinto está marcado.
 
@@ -48,10 +53,9 @@ lo que resultó distinto está marcado.
   drenaje de foco de Wayland no estorba (sin agotar el tope); el playhead
   con `@async` va bien en el hilo 1. Desde el daemon, dos previews seguidas
   en el mismo daemon: la ventana se abre desde el proceso con `nohup`,
-  reproduce los 420 frames y cierra con Esc («OK preview closed»). **No
-  probado a mano:** teclas y ratón más allá de Esc, y el cierre por Ctrl-C
-  en el cliente (este proceso no pudo enviar pulsaciones ni capturar la
-  pantalla por permisos de macOS).
+  reproduce los 420 frames y cierra con Esc («OK preview closed»). **Teclas
+  y ratón:** probados a mano por Alex, incluido el movimiento de cámara:
+  funcionan. Sin probar: el cierre por Ctrl-C en el cliente del daemon.
 - **§6 · Julia contra Python.** Hecho. Cuatro demos idénticas byte a byte a
   la primera; `11_chase_camera` difería en los 220 frames y la causa estaba
   en Python: fusiona mallas consecutivas en un solo `draw_indexed` y en
