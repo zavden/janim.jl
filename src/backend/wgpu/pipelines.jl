@@ -46,16 +46,25 @@ const _WGSL_DIR = joinpath(@__DIR__, "shaders")
 
 The WGSL source `shaders/<name>` with every `// #INSERT x.wgsl` line
 replaced by `shaders/inserts/x.wgsl`. Inserts do not nest.
+
+The file and its inserts are declared precompile dependencies: the constants
+below bake the sources into the cache, and a `.wgsl` is not a `.jl`, so
+without the declaration an edited shader stays old until some Julia file of
+the package changes too.
 """
 function _wgsl(name::String)
+    path = joinpath(_WGSL_DIR, name)
+    include_dependency(path)
     out = IOBuffer()
-    for line in eachline(joinpath(_WGSL_DIR, name))
+    for line in eachline(path)
         m = match(r"^// #INSERT (\S+)\s*$", line)
         if m === nothing
             println(out, line)
         else
+            insert = joinpath(_WGSL_DIR, "inserts", String(m[1]))
+            include_dependency(insert)
             println(out, "// ── ", m[1], " ──")
-            print(out, read(joinpath(_WGSL_DIR, "inserts", String(m[1])), String))
+            print(out, read(insert, String))
             println(out)
         end
     end
