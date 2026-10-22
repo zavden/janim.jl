@@ -95,9 +95,17 @@ frames en Linux y macOS que pide el §0, porque un shader común cambió.
      `taskkill /F /T` (no hay TERM). El pid del pidfile se traduce a WINPID
      con `ps -p`. Probado con un huérfano en el 7400 arrancado a mano:
      `check` lo ve y sale 1, `finish` lo cierra y respeta el tuyo.
-  6. **`-p`**: `cmd.exe //c start "" "$(cygpath -w ruta)"`. La doble barra
-     hace falta: MSYS convierte un `/c` suelto en ruta (`tasklist /FI`
-     llegó como `C:/Program Files/Git/FI`).
+  6. **`-p`**: `cmd.exe /c start "" "$(cygpath -w ruta)"`, con
+     `MSYS2_ARG_CONV_EXCL='*'` delante, igual que el `taskkill /F /T` de
+     `finish`: MSYS convierte un `/c` suelto en ruta (`tasklist /FI` llegó
+     como `C:/Program Files/Git/FI`) y la variable lo impide. `//c` también
+     lo impediría, pero Cygwin, que no convierte nada, se lo pasaría tal cual
+     a cmd, que lo ignora y abre un cmd interactivo, y taskkill rechaza
+     `//F` (comprobado pasándolos literales desde PowerShell). Como Cygwin
+     ignora la variable, el mismo texto sirve en Git Bash, MSYS2 y Cygwin;
+     los dos últimos, sin probar aquí (MSYS2 además no hereda el PATH de
+     usuario con su `MSYS2_PATH_TYPE=minimal`, así que no encuentra `julia`
+     sin `inherit`). WSL no es este port: es un Linux.
   7. **El panel**: sin probar aquí (los lotes no tienen TTY); a probar por
      Alex en Windows Terminal, junto con `preview` cerrada a mano y Ctrl-C.
   8. **El daemon**: ningún cambio salvo uno **no previsto, y el único que
@@ -120,9 +128,9 @@ frames en Linux y macOS que pide el §0, porque un shader común cambió.
   de 3 s, `-p` (abre el reproductor) y `daemon stop` (borra el pidfile).
   `bin/janim` cambia en ramas `((WIN))` y en tres refactors de salida
   idéntica (`_send`, `_is_abs`, `_reply_path`; `check`/`finish` leen un
-  sexto campo que en Linux va vacío). **Sin probar:** qué pasa con el daemon
-  al cerrar la pestaña del terminal que lo arrancó (Windows manda
-  CTRL_CLOSE_EVENT a los procesos de esa consola).
+  sexto campo que en Linux va vacío). **Probado por Alex el 22:** el daemon
+  sobrevive a cerrar la ventana de Git Bash que lo arrancó y sigue
+  contestando desde una nueva.
 - **§5 · La ventana.** Escrita como se preveía: `bindings.jl` gana
   `WGPUSurfaceSourceWindowsHWND`, `_create_surface` la rellena con
   `glfwGetWin32Window` y `GetModuleHandleW`, y `create_window` acepta

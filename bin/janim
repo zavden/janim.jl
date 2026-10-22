@@ -169,8 +169,9 @@
 #
 # Port: $JANIM_PORT (default 7318).
 #
-# WINDOWS: run it from Git Bash (`bin/janim …`). Paths may be written `C:\…`,
-# `C:/…` or `/c/…` and may hold spaces; `-p` opens the file with its player.
+# WINDOWS: run it from Git Bash (`bin/janim …`; MSYS2 and Cygwin take the
+# same branch). Paths may be written `C:\…`, `C:/…` or `/c/…` and may hold
+# spaces; `-p` opens the file with its player.
 set -euo pipefail
 
 PORT="${JANIM_PORT:-7318}"
@@ -364,10 +365,11 @@ open_output() {
             ;;
         MINGW*|MSYS*|CYGWIN*)
             # Windows: hand the file to its registered player, as a double
-            # click would. `start` is cmd's; the `""` is the window title it
-            # insists on reading first, and `//c` reaches cmd as `/c` — Git
-            # Bash would turn a lone `/c` into a path.
-            cmd.exe //c start "" "$(cygpath -w -- "$path")" >/dev/null 2>&1 ||
+            # click would. `start` is cmd's, and the `""` is the window title
+            # it insists on reading first. MSYS (Git Bash, MSYS2) would turn
+            # the lone `/c` into a path; the variable tells it not to, and
+            # Cygwin, which never converts, ignores it.
+            MSYS2_ARG_CONV_EXCL='*' cmd.exe /c start "" "$(cygpath -w -- "$path")" >/dev/null 2>&1 ||
                 echo "WARN -p: could not open $path" >&2
             return 0 ;;
         *)
@@ -622,9 +624,10 @@ finish_cmd() {
     if ((WIN)); then
         # Windows pids, which bash's `kill` cannot reach, and no TERM to try
         # first: taskkill ends them outright, /T taking any farm worker along.
+        # The variable keeps MSYS from reading `/F` as a path (see `-p`).
         local args=() p
-        for p in "${pids[@]}"; do args+=(//PID "$p"); done
-        taskkill //F //T "${args[@]}" >/dev/null 2>&1 || true
+        for p in "${pids[@]}"; do args+=(/PID "$p"); done
+        MSYS2_ARG_CONV_EXCL='*' taskkill /F /T "${args[@]}" >/dev/null 2>&1 || true
     else
         kill "${pids[@]}" 2>/dev/null || true
         # TERM first, then insist: a daemon parked inside a GPU call can take a
