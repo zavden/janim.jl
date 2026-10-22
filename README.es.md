@@ -36,9 +36,8 @@ vocabulario narrado de Manim —`Circle`, `Transform`, `play!`, `next_to!`,
 - **Linux** con un driver de Vulkan (Mesa RADV, lavapipe u otro), **macOS en
   Apple Silicon**, donde Janim dibuja con Metal (probado en macOS 26.6, Apple
   M1), o **Windows 11**, donde dibuja con DX12 (probado en Windows 11 25H2,
-  AMD Radeon RX 9070 XT). En Windows funcionan el render y la ventana en vivo
-  desde `julia`; la línea de órdenes está por escribir (ver
-  [`WINDOWS.md`](WINDOWS.md)).
+  AMD Radeon RX 9070 XT) y la línea de órdenes corre desde Git Bash (las
+  notas del port están en [`WINDOWS.md`](WINDOWS.md)).
 - **Julia 1.11 o posterior** (desarrollado con la 1.12).
 - Las fuentes que pidan tus escenas. Los ejemplos usan DejaVu Sans.
 - Opcional: **`latex` y `dvisvgm`** en el `PATH`, solo para
@@ -88,11 +87,13 @@ brew install --cask font-dejavu                     # la fuente de los ejemplos,
 
 ### Windows
 
-En PowerShell. Julia viene con juliaup desde winget; MiKTeX, que trae
-`dvisvgm`, es opcional. Git for Windows solo hace falta para clonar.
+En PowerShell. Julia viene con juliaup desde winget; Git for Windows trae
+Git Bash, desde donde corre `bin/janim`; MiKTeX, que trae `dvisvgm`, es
+opcional.
 
 ```powershell
 winget install -e --id Julialang.Juliaup
+winget install -e --id Git.Git
 winget install -e --id MiKTeX.MiKTeX      # opcional: Tex(…; via = :latex)
 ```
 
@@ -116,10 +117,14 @@ instalaste MiKTeX, abre MiKTeX Console y pon la instalación de paquetes que
 falten en *Always* (o ejecuta
 `initexmf --set-config-value=[MPM]AutoInstall=1`).
 
-`bin/janim` es bash y su daemon todavía no corre en Windows: renderiza con
-`julia --project=. escena.jl`, como abajo, y abre la ventana en vivo con
-`julia --project=. -e 'using Janim; live(\"escena.jl\")'` (PowerShell quiere
-las comillas interiores escapadas así).
+La línea de órdenes es el mismo `bin/janim` que en Linux y macOS, desde
+**Git Bash** (el terminal que instala Git for Windows). Desde el clon,
+`bin/janim daemon start`, y luego `bin/janim render escena.jl -qm`,
+`bin/janim escena.jl` para la ventana en vivo, `bin/janim check` y el resto
+como abajo; las rutas pueden llevar espacios y escribirse `C:\…`, `C:/…` o
+`/c/…`. Desde PowerShell, sin daemon, `julia --project=. escena.jl`
+renderiza y `julia --project=. -e 'using Janim; live(\"escena.jl\")'` abre
+la ventana en vivo (PowerShell quiere las comillas interiores escapadas así).
 
 ## Una escena mínima
 
@@ -208,11 +213,11 @@ muchos ejemplos está en español.
 
 ## Limitaciones conocidas
 
-- **Windows es un port parcial.** El render y la ventana en vivo funcionan
-  (DX12, comprobado en una sola máquina); la CLI con su daemon todavía no.
-  Los frames son reproducibles
-  dentro de cada ruta (RADV, lavapipe, Metal, DX12 o WARP), y las rutas
-  pueden diferir entre sí en un píxel en algunos bordes.
+- **Windows es nuevo.** El render, la línea de órdenes con su daemon (desde
+  Git Bash) y la ventana en vivo funcionan con DX12, comprobado en una sola
+  máquina. Los frames son reproducibles dentro de cada ruta (RADV, lavapipe,
+  Metal, DX12 o WARP), y las rutas pueden diferir entre sí en un píxel en
+  algunos bordes.
 - **No hay desenfoque de movimiento en el vídeo.** `Scene` rechaza
   `motion_blur > 1`, y por tanto también la opción `--motion-blur` de la CLI.
   Lo que existe es `render_frame_motion`, que promedia varias exposiciones en

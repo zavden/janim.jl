@@ -15,10 +15,10 @@ escribe en el mismo sitio y con la misma forma que la de Cocoa.
 
 ## Resultado · 2026-10-21, Windows 11 Home 25H2, Ryzen 7 9700X, Radeon RX 9070 XT, Julia 1.12.7 (juliaup)
 
-**Hechos el §2, el §3, el §5 y el §6.** Render a fichero, las doce demos a
-720p60, la ventana en vivo con teclas y ratón, y Julia contra Python,
-comprobados en esta máquina el 2026-10-21 y el 22 (la ventana, a mano por
-Alex). Faltan el §4 (la CLI y el daemon bajo Git Bash) y la comparación de
+**Hechos el §2, el §3, el §4, el §5 y el §6.** Render a fichero, las doce
+demos a 720p60 y a 1080p60, la CLI con su daemon bajo Git Bash, la ventana en
+vivo con teclas y ratón, y Julia contra Python, comprobados en esta máquina
+el 2026-10-21 y el 22 (la ventana, a mano por Alex). Falta la comparación de
 frames en Linux y macOS que pide el §0, porque un shader común cambió.
 
 - **§1 · Preparar.** El ID de winget era `Julialang.Juliaup`, no
@@ -63,8 +63,66 @@ frames en Linux y macOS que pide el §0, porque un shader común cambió.
   `select` con el mismo valor, en las dos bibliotecas. **Ojo:** `_wgsl` lee
   los shaders al precompilar sin `include_dependency`, así que un `.wgsl`
   cambiado solo entra cuando otro `.jl` invalida la caché; la primera prueba
-  del arreglo siguió fallando por eso.
-- **§4 · Daemon y CLI.** Sin empezar.
+  del arreglo siguió fallando por eso (arreglado el 22, abajo).
+- **§4 · Daemon y CLI.** Hecho el 2026-10-22, todo desde Git Bash (Git
+  2.56, `uname -s` = `MINGW64_NT-10.0-26200`; ojo, este bash dice
+  `$OSTYPE` = `cygwin`, no `msys`: la compuerta `WIN` acepta los dos). Por
+  el orden de la lista de abajo:
+  1. **Las rutas**, como se preveía: `abs_path` pasa por `cygpath -ma`
+     (forma mixta, también para un fichero que no existe; acepta `/c/x`,
+     `C:\x` y `C:/x`); la `:escena` de una dirección se separa antes, porque
+     cygpath se come los dos puntos (`x.jl:intro` → `x.jlintro`). Bash
+     acepta `C:/…` en `[[ -f ]]`, `mkdir -p` y redirecciones, así que
+     `janim.cfg`, `--out_dir` y `-o` no necesitan más; `_is_abs` reconoce
+     `C:\…` y `C:/…` como absolutas (el aviso de `--out_dir` sale bien).
+  2. **`--project`**: MSYS sí convierte `--project=/c/…` (comprobado con
+     `Base.active_project()`), pero `janim_root` da la forma mixta igual,
+     para no depender de ello.
+  3. **`/dev/tcp` funciona**: `_connect3` no cambia.
+  4. **`daemon start`** cae en `nohup` y contesta a los 4,4 s. `$!` es el
+     pid de bash, no el de Windows (913 frente a WINPID 4440): `kill -0`,
+     `wait` y el `kill` del tiempo de espera funcionan sobre él, y ese
+     `kill` se lleva al lanzador y al julia real (comprobado); el pidfile lo
+     guarda tal cual. **No previsto:** el `julia` del PATH es
+     `julialauncher.exe` (winget instala el MSIX de la Store); el lanzador
+     lleva en su línea de órdenes el `daemon(port = N)` y arranca el julia
+     real como hijo con una línea de órdenes vacía (solo el `.exe`).
+  5. **`check` y `finish`**: rama de Windows con una sola llamada a
+     PowerShell (≈0,8 s: `Win32_Process` de `julia.exe` y
+     `julialauncher.exe`, más `Get-NetTCPConnection -State Listen`), que
+     informa del hijo (el que escucha y tiene la memoria) y guarda el
+     lanzador como sexto campo para que `finish` lo cierre también, con
+     `taskkill /F /T` (no hay TERM). El pid del pidfile se traduce a WINPID
+     con `ps -p`. Probado con un huérfano en el 7400 arrancado a mano:
+     `check` lo ve y sale 1, `finish` lo cierra y respeta el tuyo.
+  6. **`-p`**: `cmd.exe //c start "" "$(cygpath -w ruta)"`. La doble barra
+     hace falta: MSYS convierte un `/c` suelto en ruta (`tasklist /FI`
+     llegó como `C:/Program Files/Git/FI`).
+  7. **El panel**: sin probar aquí (los lotes no tienen TTY); a probar por
+     Alex en Windows Terminal, junto con `preview` cerrada a mano y Ctrl-C.
+  8. **El daemon**: ningún cambio salvo uno **no previsto, y el único que
+     importa: los espacios.** El protocolo parte la línea por blancos y la
+     carpeta de usuario es `C:/Users/Alexander Vazquez`: ninguna orden
+     llegaba entera. `_send` (cliente, solo Windows) manda cada espacio de
+     un campo como `|`, que ningún nombre Win32 puede contener, y `_serve`
+     (daemon, tras `Sys.iswindows()`) los devuelve; `-p` toma la ruta de la
+     respuesta hasta el ` (` de la nota. Linux y macOS mandan y reciben la
+     línea de antes, con su mismo fallo para rutas con espacios: quitar la
+     compuerta es una línea en cada lado, y es decisión de Alex.
+
+  Probado todo por el daemon, en `renders/cli dir/` (con espacio, a
+  propósito): `render -ql` (9 s con la compilación de la escena, luego
+  menos de 1 s), `-o "03 with spaces.mp4"`, `frame … 60`, `-s --to 40`,
+  `x.jl:construct -s --to 10`, `-j 2` (8 s, 140 frames: la granja arranca
+  sus julias con `Sys.BINDIR/julia` sin `.exe` y Windows lo encuentra), `-t`
+  (ProRes, 46 MB), `-o 'C:\…\abs win.mp4'` con `--out_dir` (avisa y gana la
+  absoluta), `states`, `status`, la preview caliente por el socket con tope
+  de 3 s, `-p` (abre el reproductor) y `daemon stop` (borra el pidfile).
+  `bin/janim` cambia en ramas `((WIN))` y en tres refactors de salida
+  idéntica (`_send`, `_is_abs`, `_reply_path`; `check`/`finish` leen un
+  sexto campo que en Linux va vacío). **Sin probar:** qué pasa con el daemon
+  al cerrar la pestaña del terminal que lo arrancó (Windows manda
+  CTRL_CLOSE_EVENT a los procesos de esa consola).
 - **§5 · La ventana.** Escrita como se preveía: `bindings.jl` gana
   `WGPUSurfaceSourceWindowsHWND`, `_create_surface` la rellena con
   `glfwGetWin32Window` y `GetModuleHandleW`, y `create_window` acepta
@@ -72,12 +130,17 @@ frames en Linux y macOS que pide el §0, porque un shader común cambió.
   `_framebuffer_size` es `(854, 480)` para una ventana de 854×480. El bucle
   en vivo con `03_portals` a 15 fps presentó 188 frames en 20 s sin
   reconfigurar (los primeros segundos son compilación). **Teclas y ratón:**
-  probados a mano por Alex el 2026-10-22: funcionan. Desde el daemon, sin
-  probar: no existe aquí todavía (§4).
+  probados a mano por Alex el 2026-10-22: funcionan. Desde el daemon, la
+  preview por el socket abre y cierra bien (tope de 3 s); las teclas desde el
+  daemon, a probar por Alex.
 - **§6 · Julia contra Python.** Hecho con los arneses del `MACOS.md`, a
   640×360 y 10 fps, un proceso por render: las cinco demos dan frames
   **idénticos byte a byte** en DX12 (140, 140, 180, 141 y 220).
-- **Lo que no cambió:** `glfw.jl`, `context.jl`, `live.jl`, `bin/janim`.
+- **Lo que no cambió:** `glfw.jl`, `context.jl`, `live.jl`. **Lo común que
+  sí cambió:** el `select` del CRT en `effects.wgsl` (§3) y el
+  `include_dependency` de los `.wgsl` en `_wgsl` (`pipelines.jl`), que no
+  toca ningún frame: editar `effects.wgsl` solo ya recompila Janim (20–25 s,
+  comprobado).
 
 ## 0 · Reglas de trabajo
 
